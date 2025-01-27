@@ -7,6 +7,7 @@ from selenium.webdriver.common.by import By
 import selenium.webdriver.support.expected_conditions as EC
 import time
 import re
+import pandas as pd
 
 
 def initDriver(options=''):
@@ -18,13 +19,17 @@ def calculate_rate_per_unit(price, size_quantity):
     size_quantity = size_quantity.lower()
     try:
         # Extract numeric value and unit using regex
-        match = re.search(r"(\d+(\.\d+)?)\s*(lb|oz|fl oz|gal|each|ct)", size_quantity)
+        match = re.search(r"(\d+(\.\d+)?)\s*(lb|oz|fl oz|gal|each|ct|count|dozen)", size_quantity)
         if not match:
             return "Rate not applicable"
         
         # Get the numeric value and unit
         value = float(match.group(1))
         unit = match.group(3)
+
+        if unit == "dozen" or unit == "count":
+            unit = "each"
+            value = value * 12 if unit == "dozen" else 1
 
         # Conversion logic
         if unit == "lb":
@@ -39,12 +44,16 @@ def calculate_rate_per_unit(price, size_quantity):
         elif unit == "gal":
             rate = price / value  # Rate per gallon
             return f"${rate:.2f} per gallon"
+        elif unit == "each":
+            rate = price / value  # Rate per gallon
+            return f"${rate:.2f} per item"
         else:
             return "Rate not applicable"  # Not a weight- or volume-based unit
     except Exception as e:
         return f"Error: {e}"
 
 driver = initDriver()
+data = []
 
 driver.get("https://new.aldi.us/products/dairy-eggs/k/10")
 WebDriverWait(driver,60).until(EC.element_to_be_clickable((By.CLASS_NAME, "product-tile")))
@@ -75,7 +84,11 @@ while next:
             size_element = product.find_element(By.CLASS_NAME, "product-tile__unit-of-measurement")
             product_size = size_element.text  # Get the size/quantity text
         except:
-            product_size = "Size/quantity not found"
+            match = re.search(r"(\d+(\.\d+)?\s*(lb|oz|fl oz|gal|each|ct|count|dozen))", product_title)
+            if match:
+                product_size = match.group(1)
+            else:
+                product_size = "Size/quantity not found"
 
         if product_price and product_size:
             rate_per_pound = calculate_rate_per_unit(product_price, product_size)
@@ -83,6 +96,7 @@ while next:
             rate_per_pound = "Insufficient data"
         # Print the product details
         print(f"Product: {product_title}\nPrice: ${product_price:.2f}\nSize/Quantity: {product_size}\nRate per Pound: {rate_per_pound}\n")
+        data.append(pd.DataFrame.from_dict({"Product": [product_title], "Price": [product_price], "Rate": [rate_per_pound], "Size": [product_size]}))
     print("NEXT")   
     next.click()
     time.sleep(2)
@@ -94,3 +108,4 @@ while next:
 
 # Close the browser
 driver.close()
+pd.concat(data).to_csv("Aldis.csv", index=False)
