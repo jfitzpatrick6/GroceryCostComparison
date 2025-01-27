@@ -89,7 +89,10 @@ for url in urls:
     except:
         ''
 
-    next = driver.find_element(By.XPATH, '//a[@aria-label="Next"]')
+    try:
+        next = driver.find_element(By.XPATH, '//a[@aria-label="Next"]')
+    except:
+        next = True
 
     while next:
         time.sleep(10)
@@ -122,8 +125,9 @@ for url in urls:
             # Print the product details
             print(f"Product: {product_title}\nPrice: ${product_price:.2f}\nSize/Quantity: {product_size}\nRate per Pound: {rate_per_pound}\n")
             data.append(pd.DataFrame.from_dict({"Product": [product_title], "Price": [product_price], "Rate": [rate_per_pound], "Size": [product_size]}))
-        print("NEXT")   
-        next.click()
+        print("NEXT")
+        if next != True:   
+            next.click()
         time.sleep(2)
         WebDriverWait(driver,60).until(EC.element_to_be_clickable((By.CLASS_NAME, "product-tile")))
         try:
