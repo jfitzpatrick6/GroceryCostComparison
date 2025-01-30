@@ -9,10 +9,28 @@ import time
 import re
 import pandas as pd
 
+BASE_HEADERS = {
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.99 Safari/537.36",
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+    "accept-encoding": "gzip, deflate, br",  # Add Brotli compression (br), as modern browsers use it.
+    "referer": "https://www.walmart.com/",  # Walmart expects internal navigation.
+    "origin": "https://www.walmart.com",  # Some sites use this to validate requests.
+    "dnt": "1",  # Do Not Track (optional, but some browsers send it).
+    "sec-fetch-dest": "document",  # Helps mimic real browser requests.
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "same-origin",
+    "sec-fetch-user": "?1",
+    "connection": "keep-alive",  # Ensures persistent connections.
+    "upgrade-insecure-requests": "1",  # Indicates support for secure connections.
+    "cache-control": "max-age=0",  # Ensures fresh content is always fetched.
+    "pragma": "no-cache",  # Prevents caching (alternative to cache-control).
+}
 
 def initDriver(options=''):
     service = Service(ChromeDriverManager().install().replace('THIRD_PARTY_NOTICES.chromedriver', 'chromedriver.exe'))
     driver = webdriver.Chrome(service=service, options=options)
+    driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {"headers": BASE_HEADERS})
     return driver
 
 def calculate_rate_per_unit(price, size_quantity):
