@@ -7,6 +7,51 @@ headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 }
 
+def calculate_rate_per_unit(price, size_quantity):
+    size_quantity = size_quantity.lower()
+    try:
+        # Extract numeric value and unit using regex
+        match = re.search(r"([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt)", size_quantity)
+        if not match:
+            return "Rate not applicable"
+        
+        value = float(match.group(1).replace(',', ''))
+        unit = match.group(2)
+
+        if unit == "dozen" or unit == "count" or unit == "ct" or unit == 'pk' or unit == 'pc':
+            value = value * 12 if unit == "dozen" else value
+            unit = "each"
+
+        # Conversion logic
+        if unit == "lb" or unit == "ib":
+            rate = price / value  # Rate per pound
+            return f"${rate:.2f} per lb"
+        elif unit == "oz":
+            rate = price / (value / 16)  # Convert ounces to pounds
+            return f"${rate:.2f} per lb"
+        elif unit == "fl. oz":
+            rate = price / (value / 128)  # Convert fluid ounces to gallons
+            return f"${rate:.2f} per gallon"
+        elif unit == "gal":
+            rate = price / value  # Rate per gallon
+            return f"${rate:.2f} per gallon"
+        elif unit == "each":
+            rate = price / value  # Rate per Item
+            return f"${rate:.2f} per item"
+        elif unit == "pint":
+            rate = price / (value / 8)  # Rate per gallon
+            return f"${rate:.2f} per item"
+        elif unit == "l" or unit == 'liter': 
+            rate = price / (value / 3.78541178)  # Rate per gallon
+            return f"${rate:.2f} per item"
+        elif unit == "qt": 
+            rate = price / (value / 4)  # Rate per gallon
+            return f"${rate:.2f} per item"
+        else:
+            return "Rate not applicable"  # Not a weight- or volume-based unit
+    except Exception as e:
+        return f"Error: {e} {size_quantity}"
+
 # Returns session token to be passed with all requests
 def getAuth():
     data = {
@@ -70,19 +115,18 @@ def getDataByCategory(category, session_token):
     for item in items:
         try:
             product_name = item['name']
-            product_price = item['base_price']
             if not item['order_by_weight']:
+                product_price = item['base_price']
                 product_size = item['size_string']
-                if not product_size:
-                    rate = product_price
+                if product_size:
+                    rate = calculate_rate_per_unit(product_price, product_size)
                 else:
-                    try:
-                        rate = str(item['uom_price']['price']) + ' per ' + item['uom_price']['uom']
-                    except:
-                        rate = 'N/A'
+                    rate = 'N/A'
             else:
-                product_size = ""
-                rate = item['base_price']
+                # if ordered by weight
+                product_price = ''
+                product_size = 'N/A'
+                rate = calculate_rate_per_unit(item['base_price'], item['display_uom'])
             print(f"Product: {product_name}\nPrice: {product_price}\nSize/Quantity: {product_size}\nRate: {rate}\n")
             data.append(pd.DataFrame.from_dict({"Product": [product_name], "Price": [product_price], "Rate": [rate], "Size": [product_size]}))
         except Exception as e:
