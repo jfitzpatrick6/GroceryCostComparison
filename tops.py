@@ -7,6 +7,8 @@ headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 }
 
+total_products = 0
+
 def calculate_rate_per_unit(price, size_quantity):
     size_quantity = size_quantity.lower()
     try:
@@ -104,35 +106,45 @@ def getCategories(session_token, store_id):
 
 
 def getDataByCategory(category, session_token):
-    url = f"https://shop.topsmarkets.com/api/v2/store_products?fulfillment_type=instore&category_id={category}&category_ids={category}"
-    headers2 = {
-        "Authorization": f"Bearer {session_token}",
-        "Content-Type": "application/json"
-    }
-    response = requests.get(url, headers=headers2)
-    response_json = response.json()
-    items = response_json.get('items', [])
-    for item in items:
-        try:
-            product_name = item['name']
-            if not item['order_by_weight']:
-                product_price = item['base_price']
-                product_size = item['size_string']
-                if product_size:
-                    rate = calculate_rate_per_unit(product_price, product_size)
+    global total_products
+    limit =  60
+    offset = 0
+    total = 100
+    while offset < total:
+        url = f"https://shop.topsmarkets.com/api/v2/store_products?fulfillment_type=instore&category_id={category}&category_ids={category}&limit={limit}&offset={offset}"
+        headers2 = {
+            "Authorization": f"Bearer {session_token}",
+            "Content-Type": "application/json"
+        }
+        response = requests.get(url, headers=headers2)
+        response_json = response.json()
+        
+        total = response_json['item_count']
+        offset += limit
+        
+        items = response_json.get('items', [])
+        for item in items:
+            try:
+                product_name = item['name']
+                if not item['order_by_weight']:
+                    product_price = item['base_price']
+                    product_size = item['size_string']
+                    if product_size:
+                        rate = calculate_rate_per_unit(product_price, product_size)
+                    else:
+                        rate = 'N/A'
                 else:
-                    rate = 'N/A'
-            else:
-                # if ordered by weight
-                product_price = ''
-                product_size = 'N/A'
-                rate = calculate_rate_per_unit(item['base_price'], item['display_uom'])
-            print(f"Product: {product_name}\nPrice: {product_price}\nSize/Quantity: {product_size}\nRate: {rate}\n")
-            data.append(pd.DataFrame.from_dict({"Product": [product_name], "Price": [product_price], "Rate": [rate], "Size": [product_size]}))
-        except Exception as e:
-            print(e)
-            print(item)
-            time.sleep(50)
+                    # if ordered by weight
+                    product_price = ''
+                    product_size = 'N/A'
+                    rate = calculate_rate_per_unit(item['base_price'], item['display_uom'])
+                print(f"Product: {product_name}\nPrice: {product_price}\nSize/Quantity: {product_size}\nRate: {rate}\n")
+                data.append(pd.DataFrame.from_dict({"Product": [product_name], "Price": [product_price], "Rate": [rate], "Size": [product_size]}))
+            except Exception as e:
+                print(e)
+                print(item)
+                time.sleep(50)
+    total_products += total
         
 
 data = []
@@ -143,3 +155,4 @@ categories = getCategories(session, store_id)
 for category in categories:
     getDataByCategory(category, session)
 pd.concat(data).to_csv("Tops.csv", index=False)
+print(total_products)
