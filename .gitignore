@@ -2,3 +2,5 @@
 *.csv
 walmart_search.json
 *.json
+/__pycache__
+*.pyc

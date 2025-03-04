@@ -30,7 +30,6 @@ def parse_search(html_text:str) -> Dict:
 async def scrape_walmart_page(session:httpx.AsyncClient, query:str="", page=1, sort="price_low", url=""):
     """scrape a single walmart search page"""
     url = url.replace("PAGE", str(page))
-    print(url)
     await asyncio.sleep(random.uniform(2.3, 6.5))
     resp = await session.get(url)
     assert resp.status_code == 200, "request is blocked"
@@ -109,10 +108,25 @@ async def run():
         print(f"Product: {product_name}\nPrice: {product_price}\nSize/Quantity: {product_size}\nRate per Pound: {rate}\n")
         frame.append(pd.DataFrame.from_dict({"Product": [product_name], "Price": [product_price], "Rate": [rate], "Size": [product_size]}))
 
-    with open("walmart_search.json", "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2, ensure_ascii=False)
+def convert_price(price_str):
+    """
+    Convert a price string from cents per ounce (e.g. "11.7 Â¢/oz")
+    to a formatted string in dollars per ounce (e.g. "$0.117/oz").
+    If conversion is not applicable, return the original string.
+    """
+    if isinstance(price_str, str):
+        # Remove any stray encoding characters (like "Â")
+        clean_str = price_str.replace("Â", "").strip()
+        # Look for a pattern matching something like "11.7 ¢/oz"
+        match = re.search(r"([\d.]+)\s*¢\/(.+)", clean_str)
+        if match:
+            cents = float(match.group(1))
+            dollars_per_oz = cents / 100.0
+            return f"${dollars_per_oz:.3f}/{match.group(2)}"
+    return price_str
 
-
-if __name__ == "__main__":
-    asyncio.run(run())
-    pd.concat(frame).to_csv("Walmart.csv", index=False)
+asyncio.run(run())
+df_all = pd.concat(frame)
+if "Rate" in df_all.columns:
+    df_all["Rate"] = df_all["Price"].apply(convert_price)
+df_all.to_csv("Walmart.csv", index=False)
