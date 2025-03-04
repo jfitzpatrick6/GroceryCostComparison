@@ -114,7 +114,7 @@ def convert_price(price_str):
     to a formatted string in dollars per ounce (e.g. "$0.117/oz").
     If conversion is not applicable, return the original string.
     """
-    if isinstance(price_str, str):
+    if isinstance(price_str, str) and '¢' in price_str:
         # Remove any stray encoding characters (like "Â")
         clean_str = price_str.replace("Â", "").strip()
         # Look for a pattern matching something like "11.7 ¢/oz"
