@@ -14,5 +14,14 @@ def getData():
     top = tops.main()
     BJ = BJs.main()
     Wal = Walmart.main()
-    totalDF = pd.concat([aldi, top, BJ, Wal])
+    totalDF = pd.concat([aldi, top, BJ, Wal], ignore_index=True)
+    totalDF['Datetime'] = pd.Timestamp.now()
     return totalDF
+
+def main():
+    data = getData()
+    timestamp = pd.Timestamp.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"Grocery Report {timestamp}.csv"
+    data.to_csv(filename, index=False)
+
+main()

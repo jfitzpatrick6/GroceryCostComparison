@@ -107,6 +107,7 @@ def getCategories(session_token, store_id):
 
 def getDataByCategory(category, session_token):
     global total_products
+    data = []
     limit =  60
     offset = 0
     total = 100
@@ -145,6 +146,7 @@ def getDataByCategory(category, session_token):
                 print(item)
                 time.sleep(50)
     total_products += total
+    return pd.concat(data)
         
 def main():
     data = []
@@ -153,5 +155,5 @@ def main():
     changeStore("102",session)
     categories = getCategories(session, store_id)
     for category in categories:
-        getDataByCategory(category, session)
+        data.append(getDataByCategory(category, session))
     return pd.concat(data)
