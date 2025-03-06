@@ -9,13 +9,7 @@ import random
 import re
 import pandas as pd
 
-URLS = ["https://www.walmart.com/browse/food-grocery/3734780_7455738?&page=PAGE&affinityOverride=default","https://www.walmart.com/search?q=meat+%26+seafood&page=PAGE",
-        "https://www.walmart.com/browse/food/fresh-produce/976759_976793?&page=PAGE", "https://www.walmart.com/browse/food/all-tea/976759_976782_1001320_9254040?&page=PAGE",
-        "https://www.walmart.com/browse/baking/976759_976780?&page=PAGE", "https://www.walmart.com/browse/food/frozen-fruits-vegetables/976759_976791_5624760?&page=PAGE",
-        "https://www.walmart.com/browse/dairy-eggs/976759_9176907?&page=PAGE", "https://www.walmart.com/browse/bakery-bread/976759_976779?&page=PAGE",
-        "https://www.walmart.com/browse/beverages/976759_976782?&page=PAGE", "https://www.walmart.com/browse/pantry/976759_976794?&page=PAGE",
-        "https://www.walmart.com/browse/deli/976759_976789?&page=PAGE", "https://www.walmart.com/browse/snacks-cookies-chips/976759_976787?&page=PAGE",
-        "https://www.walmart.com/browse/alcohol/976759_2975985?&page=PAGE", "https://www.walmart.com/browse/coffee/976759_1086446?&page=PAGE"]
+URLS = ["https://www.walmart.com/browse/food-grocery/3734780_7455738?&page=PAGE&affinityOverride=default"]
 
 def parse_search(html_text:str) -> Dict:
     """extract search results from search HTML response"""
@@ -30,6 +24,7 @@ def parse_search(html_text:str) -> Dict:
 async def scrape_walmart_page(session:httpx.AsyncClient, query:str="", page=1, sort="price_low", url=""):
     """scrape a single walmart search page"""
     url = url.replace("PAGE", str(page))
+    print(url)
     await asyncio.sleep(random.uniform(2.3, 6.5))
     resp = await session.get(url)
     assert resp.status_code == 200, "request is blocked"

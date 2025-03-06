@@ -5,3 +5,4 @@ walmart_search.json
 /__pycache__
 *.pyc
 .env
+1.env

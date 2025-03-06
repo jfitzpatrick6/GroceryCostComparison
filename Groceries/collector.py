@@ -10,10 +10,13 @@ import Walmart
 
 def getData():
     """Calls all of the main functions for each scrape, and returns a single Dataframe."""
-    aldi = aldis.main()
-    top = tops.main("102")
-    BJ = BJs.main()
-    Wal = Walmart.main()
+    with open("1.env", 'r') as f:
+        env = f.read()
+    env = env.split('\n')
+    aldi = aldis.main(env[1].split("=")[1])
+    top = tops.main(env[0].split("=")[1])
+    BJ = BJs.main(env[2].split("=")[1])
+    Wal = Walmart.main(env[3].split("=")[1])
     totalDF = pd.concat([aldi, top, BJ, Wal], ignore_index=True)
     totalDF['Datetime'] = pd.Timestamp.now()
     return totalDF
