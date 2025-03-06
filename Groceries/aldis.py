@@ -115,9 +115,8 @@ headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 }
 
-def main():
+def main(store):
     frame = []
-    store = "465-089"
     limit = 48
 
     # https://api.aldi.us/v3/product-search?currency=USD&serviceType=pickup&categoryKey=20&limit=30&offset=0&sort=relevance&servicePoint=465-089

@@ -148,11 +148,10 @@ def getDataByCategory(category, session_token):
     total_products += total
     return pd.concat(data)
         
-def main():
+def main(store_id):
     data = []
-    store_id = "102"
     session = getAuth()
-    changeStore("102",session)
+    changeStore(store_id ,session)
     categories = getCategories(session, store_id)
     for category in categories:
         data.append(getDataByCategory(category, session))

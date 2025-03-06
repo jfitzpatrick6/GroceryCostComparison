@@ -11,7 +11,7 @@ import Walmart
 def getData():
     """Calls all of the main functions for each scrape, and returns a single Dataframe."""
     aldi = aldis.main()
-    top = tops.main()
+    top = tops.main("102")
     BJ = BJs.main()
     Wal = Walmart.main()
     totalDF = pd.concat([aldi, top, BJ, Wal], ignore_index=True)
