@@ -13,23 +13,27 @@ DB_NAME = os.getenv("DB_NAME", "grocery_db")
 DB_USER = os.getenv("DB_USER", "user")
 DB_PASS = os.getenv("DB_PASS", "password")
 
-
 def get_data():
     """Calls all of the main functions for each scrape, and returns a single DataFrame."""
     with open("1.env", 'r') as f:
         env = f.read().split('\n')
 
     aldi = aldis.main(env[1].split("=")[1])
-    aldi['Store'] = 'Aldis'
+    aldi['store'] = 'Aldis'
+    aldi['store_id'] = env[1].split("=")[1]
     top = tops.main(env[0].split("=")[1])
-    top['Store'] = 'Tops'
+    top['store'] = 'Tops'
+    top['store_id'] = env[0].split("=")[1]
     BJ = BJs.main(env[2].split("=")[1])
-    BJ['Store'] = 'BJs'
+    BJ['store'] = 'BJs'
+    BJ['store_id'] = env[2].split("=")[1]
     Wal = Walmart.main(env[3].split("=")[1])
-    Wal['Store'] = 'Walmart'
+    Wal['store'] = 'Walmart'
 
     total_df = pd.concat([aldi, top, BJ, Wal], ignore_index=True)
+    total_df.dropna(how="all", inplace=True)
     total_df['Datetime'] = pd.Timestamp.now()
+    total_df["Rate"] = calculate_rates(total_df)
 
     return total_df
 
@@ -50,10 +54,11 @@ def store_data(df):
             CREATE TABLE IF NOT EXISTS grocery_prices (
                 id SERIAL PRIMARY KEY,
                 product TEXT,
-                price NUMERIC,
+                price TEXT,
                 rate TEXT,
                 size TEXT,
                 store TEXT,
+                store_id TEXT,
                 datetime TIMESTAMP
             );
         """)
