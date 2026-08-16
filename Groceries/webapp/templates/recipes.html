@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Recipes - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>Recipes</h1>
+<p><a href="/recipes/new">+ New recipe</a></p>
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Servings</th>
+            <th>Ingredients</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td><a href="/recipes/{{ row.id }}">{{ row.name }}</a></td>
+            <td>{{ row.servings or "" }}</td>
+            <td>{{ row.ingredient_count }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3">No recipes yet. <a href="/recipes/new">Add one</a>.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

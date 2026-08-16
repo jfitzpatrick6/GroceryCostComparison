@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ recipe.name }} - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>{{ recipe.name }}</h1>
+{% if recipe.servings %}<p>Servings: {{ recipe.servings }}</p>{% endif %}
+{% if recipe.notes %}<p>{{ recipe.notes }}</p>{% endif %}
+
+<h2>Ingredients</h2>
+<ul>
+    {% for ing in ingredients %}
+    <li>{% if ing.amount %}{{ ing.amount }} {% endif %}{% if ing.unit %}{{ ing.unit }} {% endif %}{{ ing.name }}</li>
+    {% else %}
+    <li>No ingredients listed.</li>
+    {% endfor %}
+</ul>
+
+<p>
+    <a href="/recipes/{{ recipe.id }}/edit">Edit</a>
+    &nbsp;
+    <form method="post" action="/recipes/{{ recipe.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this recipe?')">
+        <button type="submit">Delete</button>
+    </form>
+</p>
+{% endblock %}

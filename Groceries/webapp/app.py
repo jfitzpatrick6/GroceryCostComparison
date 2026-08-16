@@ -1,8 +1,9 @@
 import os
+import re
 
 import psycopg2
 import psycopg2.extras
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, abort, redirect, render_template, request, url_for
 
 DB_HOST = os.getenv("DB_HOST", "db")
 DB_NAME = os.getenv("DB_NAME", "grocery_db")
@@ -209,6 +210,178 @@ def remove_list_item():
     finally:
         conn.close()
     return redirect(url_for("grocery_list"))
+
+
+RECIPE_UNIT_WORDS = (
+    "cups?|tbsp|tablespoons?|tsp|teaspoons?|oz|ounces?|lbs?|pounds?|"
+    "g|grams?|kg|ml|l|liters?|cloves?|cans?|pinch|dash|each|ea|slices?|pieces?"
+)
+_INGREDIENT_LINE = re.compile(
+    rf"^\s*([\d./]+)?\s*({RECIPE_UNIT_WORDS})?\s*(.*?)\s*$", re.IGNORECASE
+)
+
+
+def parse_ingredient_line(line):
+    """Best-effort split of a free-text ingredient line into (amount, unit,
+    name). Falls back to putting the whole line in `name` if it doesn't
+    look like "<amount> <unit> <name>" - this is deliberately simple
+    (recipe-unit conversion is #36's job, not this)."""
+    match = _INGREDIENT_LINE.match(line)
+    amount, unit, name = match.groups()
+    if not name:
+        return None, None, line.strip()
+    return amount, (unit.lower() if unit else None), name
+
+
+def ensure_recipes_tables(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS recipes (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            notes TEXT,
+            servings INTEGER,
+            created_at TIMESTAMP DEFAULT now()
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS recipe_ingredients (
+            id SERIAL PRIMARY KEY,
+            recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            amount TEXT,
+            unit TEXT,
+            sort_order INTEGER NOT NULL
+        );
+    """)
+
+
+def _save_ingredients(cur, recipe_id, ingredients_text):
+    cur.execute("DELETE FROM recipe_ingredients WHERE recipe_id = %s", (recipe_id,))
+    for i, line in enumerate(ingredients_text.splitlines()):
+        if not line.strip():
+            continue
+        amount, unit, name = parse_ingredient_line(line)
+        cur.execute(
+            "INSERT INTO recipe_ingredients (recipe_id, name, amount, unit, sort_order) VALUES (%s, %s, %s, %s, %s)",
+            (recipe_id, name, amount, unit, i),
+        )
+
+
+@app.route("/recipes")
+def recipes():
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_recipes_tables(cur)
+            conn.commit()
+            cur.execute("""
+                SELECT r.id, r.name, r.servings, count(i.id) AS ingredient_count
+                FROM recipes r
+                LEFT JOIN recipe_ingredients i ON i.recipe_id = r.id
+                GROUP BY r.id
+                ORDER BY r.name
+            """)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return render_template("recipes.html", rows=rows)
+
+
+@app.route("/recipes/new", methods=["GET", "POST"])
+def new_recipe():
+    if request.method == "GET":
+        return render_template("recipe_form.html", recipe=None, ingredients_text="")
+
+    name = request.form.get("name", "").strip()
+    notes = request.form.get("notes", "").strip()
+    servings = request.form.get("servings") or None
+    ingredients_text = request.form.get("ingredients", "")
+    if not name:
+        abort(400, "Recipe name is required")
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            ensure_recipes_tables(cur)
+            cur.execute(
+                "INSERT INTO recipes (name, notes, servings) VALUES (%s, %s, %s) RETURNING id",
+                (name, notes or None, servings),
+            )
+            recipe_id = cur.fetchone()[0]
+            _save_ingredients(cur, recipe_id, ingredients_text)
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("view_recipe", recipe_id=recipe_id))
+
+
+@app.route("/recipes/<int:recipe_id>")
+def view_recipe(recipe_id):
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM recipes WHERE id = %s", (recipe_id,))
+            recipe = cur.fetchone()
+            if not recipe:
+                abort(404)
+            cur.execute(
+                "SELECT name, amount, unit FROM recipe_ingredients WHERE recipe_id = %s ORDER BY sort_order",
+                (recipe_id,),
+            )
+            ingredients = cur.fetchall()
+    finally:
+        conn.close()
+    return render_template("recipe_detail.html", recipe=recipe, ingredients=ingredients)
+
+
+@app.route("/recipes/<int:recipe_id>/edit", methods=["GET", "POST"])
+def edit_recipe(recipe_id):
+    conn = get_connection()
+    try:
+        if request.method == "GET":
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM recipes WHERE id = %s", (recipe_id,))
+                recipe = cur.fetchone()
+                if not recipe:
+                    abort(404)
+                cur.execute(
+                    "SELECT name, amount, unit FROM recipe_ingredients WHERE recipe_id = %s ORDER BY sort_order",
+                    (recipe_id,),
+                )
+                lines = []
+                for ing in cur.fetchall():
+                    parts = [p for p in (ing["amount"], ing["unit"], ing["name"]) if p]
+                    lines.append(" ".join(parts))
+            return render_template("recipe_form.html", recipe=recipe, ingredients_text="\n".join(lines))
+
+        name = request.form.get("name", "").strip()
+        notes = request.form.get("notes", "").strip()
+        servings = request.form.get("servings") or None
+        ingredients_text = request.form.get("ingredients", "")
+        if not name:
+            abort(400, "Recipe name is required")
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE recipes SET name = %s, notes = %s, servings = %s WHERE id = %s",
+                (name, notes or None, servings, recipe_id),
+            )
+            _save_ingredients(cur, recipe_id, ingredients_text)
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("view_recipe", recipe_id=recipe_id))
+
+
+@app.route("/recipes/<int:recipe_id>/delete", methods=["POST"])
+def delete_recipe(recipe_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM recipes WHERE id = %s", (recipe_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("recipes"))
 
 
 if __name__ == "__main__":
