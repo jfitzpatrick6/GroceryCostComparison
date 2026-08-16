@@ -9,6 +9,20 @@ Walmart.py's rate handling is a genuinely different mechanism (parses a
 
 import re
 
+_UNIT_PATTERN = r"([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt|fl oz|pt|ea|ea.|ft)"
+
+# Canonical unit each recognized size-unit normalizes to, for the
+# *structured* parser (parse_unit_price). Weight -> lb, volume -> gal,
+# count -> each, length -> ft.
+_CANONICAL_UNIT = {
+    "lb": "lb", "ib": "lb", "oz": "lb",
+    "gal": "gal", "fl. oz": "gal", "fl oz": "gal", "pint": "gal", "pt": "gal",
+    "l": "gal", "liter": "gal", "qt": "gal",
+    "each": "each", "dozen": "each", "count": "each", "ct": "each",
+    "pk": "each", "pc": "each", "ea": "each", "ea.": "each",
+    "ft": "ft",
+}
+
 
 def convert_metric_to_imperial(input_str):
     """
@@ -63,51 +77,58 @@ def convert_metric_to_imperial(input_str):
     return f"{round(converted_value, 2)} {conversion['unit']}"
 
 
-def calculate_rate_per_unit(price, size_quantity):
+def _match_size(size_quantity):
+    """Regex-matches a size string against recognized units, falling back to
+    a metric-to-imperial conversion first. Returns (value, raw_unit) or
+    (None, None) if nothing matched."""
     size_quantity = size_quantity.lower()
-    try:
-        match = re.search(r"([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt|fl oz|pt|ea|ea.|ft)", size_quantity)
+    match = re.search(_UNIT_PATTERN, size_quantity)
+    if not match:
+        size_quantity = convert_metric_to_imperial(size_quantity)
+        match = re.search(_UNIT_PATTERN, size_quantity)
         if not match:
-            size_quantity = convert_metric_to_imperial(size_quantity)
-            match = re.search(r"([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt|fl oz|pt|ea|ea.|ft)", size_quantity)
-            if not match:
-                return "Rate not applicable"
+            return None, None
+    value = float(match.group(1).replace(',', ''))
+    return value, match.group(2)
 
-        value = float(match.group(1).replace(',', ''))
-        unit = match.group(2)
 
-        if unit == "dozen" or unit == "count" or unit == "ct" or unit == 'pk' or unit == 'pc' or unit == 'ea' or unit == 'ea.':
-            value = value * 12 if unit == "dozen" else value
-            unit = "each"
+def parse_unit_price(price, size_quantity):
+    """Structured version: returns (unit_price, unit) where unit is one of
+    'lb'/'gal'/'each'/'ft', or (None, None) if size_quantity couldn't be
+    parsed. Meant for storing numeric, comparable data (see #13) rather
+    than display."""
+    value, raw_unit = _match_size(size_quantity)
+    if value is None or value == 0:
+        return None, None
 
-        if unit == "lb" or unit == "ib":
-            rate = price / value  # Rate per pound
-            return f"${rate:.2f} per lb"
-        elif unit == "oz":
-            rate = price / (value / 16)  # Convert ounces to pounds
-            return f"${rate:.2f} per lb"
-        elif unit == "fl. oz" or unit == "fl oz":
-            rate = price / (value / 128)  # Convert fluid ounces to gallons
-            return f"${rate:.2f} per gallon"
-        elif unit == "gal":
-            rate = price / value  # Rate per gallon
-            return f"${rate:.2f} per gallon"
-        elif unit == "each":
-            rate = price / value  # Rate per item
-            return f"${rate:.2f} per item"
-        elif unit == "pint" or unit == "pt":
-            rate = price / (value / 8)  # Rate per gallon
-            return f"${rate:.2f} per item"
-        elif unit == "l" or unit == 'liter':
-            rate = price / (value / 3.78541178)  # Rate per gallon
-            return f"${rate:.2f} per item"
-        elif unit == "qt":
-            rate = price / (value / 4)  # Rate per gallon
-            return f"${rate:.2f} per item"
-        elif unit == "ft":
-            rate = price / value  # Rate per foot
-            return f"${rate:.2f} per foot"
-        else:
-            return "Rate not applicable"  # Not a weight- or volume-based unit
+    canonical = _CANONICAL_UNIT.get(raw_unit)
+    if canonical == "each" and raw_unit == "dozen":
+        value = value * 12
+
+    if raw_unit == "oz":
+        value = value / 16  # -> lb
+    elif raw_unit in ("fl. oz", "fl oz"):
+        value = value / 128  # -> gal
+    elif raw_unit in ("pint", "pt"):
+        value = value / 8  # -> gal
+    elif raw_unit in ("l", "liter"):
+        value = value / 3.78541178  # -> gal
+    elif raw_unit == "qt":
+        value = value / 4  # -> gal
+
+    if canonical is None:
+        return None, None
+    return price / value, canonical
+
+
+def calculate_rate_per_unit(price, size_quantity):
+    """Display-string version, e.g. "$3.99 per lb". Kept for the scrapers'
+    existing "Rate" column; parse_unit_price() is the numeric equivalent."""
+    try:
+        unit_price, unit = parse_unit_price(price, size_quantity)
+        if unit_price is None:
+            return "Rate not applicable"
+        label = {"lb": "per lb", "gal": "per gallon", "each": "per item", "ft": "per foot"}[unit]
+        return f"${unit_price:.2f} {label}"
     except Exception as e:
         return f"Error: {e} {size_quantity} {price}"

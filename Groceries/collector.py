@@ -6,6 +6,7 @@ import aldis
 import BJs
 import tops
 import Walmart
+import units
 
 # Database Connection
 DB_HOST = os.getenv("DB_HOST", "db")
@@ -53,6 +54,16 @@ def get_data():
     return total_df
 
 
+def _numeric_rate(price, size):
+    """Best-effort numeric (unit_price, unit) for a row - never raises, since
+    a single bad row (e.g. Walmart's non-numeric price strings, see #12)
+    shouldn't break the whole insert."""
+    try:
+        return units.parse_unit_price(float(price), str(size))
+    except (TypeError, ValueError):
+        return None, None
+
+
 def store_data(df):
     """Stores the scraped data in a PostgreSQL database. Raises on failure rather
     than swallowing it, so a broken run is visible instead of silently a no-op."""
@@ -77,12 +88,18 @@ def store_data(df):
                         datetime TIMESTAMP
                     );
                 """)
+                # Idempotent - ALTER TABLE ADD COLUMN IF NOT EXISTS is a
+                # no-op if these already exist, so this is safe to run every
+                # time rather than needing a one-off migration step.
+                cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit_price NUMERIC;")
+                cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit TEXT;")
 
                 for _, row in df.iterrows():
+                    unit_price, unit = _numeric_rate(row['Price'], row['Size'])
                     cur.execute("""
-                        INSERT INTO grocery_prices (product, price, rate, size, store, store_id, datetime)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (row['Product'], row['Price'], row['Rate'], row['Size'], row['store'], row['store_id'], row['Datetime']))
+                        INSERT INTO grocery_prices (product, price, rate, size, store, store_id, datetime, unit_price, unit)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (row['Product'], row['Price'], row['Rate'], row['Size'], row['store'], row['store_id'], row['Datetime'], unit_price, unit))
         print(f"Inserted {len(df)} rows into grocery_prices.")
     finally:
         conn.close()
