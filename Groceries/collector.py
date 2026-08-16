@@ -13,7 +13,10 @@ DB_NAME = os.getenv("DB_NAME", "grocery_db")
 DB_USER = os.getenv("DB_USER", "user")
 DB_PASS = os.getenv("DB_PASS", "password")
 
-REQUIRED_STORE_ENV = ["TOPS_STORE", "ALDIS_STORE", "BJS_STORE", "WALMARTSTORE"]
+# TOPS_STORE/ALDIS_STORE are intentionally not required: tops.py/aldis.py
+# don't use them yet (see #43 - Instacart's white-label platform doesn't
+# support safe store targeting via a simple store id the way it used to).
+REQUIRED_STORE_ENV = ["BJS_STORE", "WALMARTSTORE"]
 
 
 def get_data():

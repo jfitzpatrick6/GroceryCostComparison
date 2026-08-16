@@ -1,8 +1,10 @@
-import time
 import re
-import pandas as pd
-import requests
-import json
+
+import instacart_storefront
+
+RETAILER_SLUG = "aldi"
+HOST = "www.aldi.us"
+
 
 def convert_metric_to_imperial(input_str):
     """
@@ -15,7 +17,7 @@ def convert_metric_to_imperial(input_str):
         return f"Invalid input format: {input_str}"
 
     value_str, metric_unit = match.groups()
-    
+
     try:
         value = float(value_str)
     except ValueError:
@@ -23,7 +25,7 @@ def convert_metric_to_imperial(input_str):
 
     # Normalize unit (lowercase, singular form)
     unit = metric_unit.lower().rstrip('s')  # Remove trailing 's' for plurals
-    
+
     # Conversion mapping - expand this as needed
     conversion_table = {
         # Mass
@@ -31,7 +33,7 @@ def convert_metric_to_imperial(input_str):
         'kilogram': {'unit': 'lb', 'factor': 2.20462},
         'g': {'unit': 'oz', 'factor': 0.035274},
         'gram': {'unit': 'oz', 'factor': 0.035274},
-        
+
         # Volume
         'l': {'unit': 'gal', 'factor': 0.264172},
         'liter': {'unit': 'gal', 'factor': 0.264172},
@@ -39,7 +41,7 @@ def convert_metric_to_imperial(input_str):
         'ml': {'unit': 'fl oz', 'factor': 0.033814},
         'milliliter': {'unit': 'fl oz', 'factor': 0.033814},
         'millilitre': {'unit': 'fl oz', 'factor': 0.033814},
-        
+
         # Length
         'm': {'unit': 'ft', 'factor': 3.28084},
         'meter': {'unit': 'ft', 'factor': 3.28084},
@@ -60,6 +62,7 @@ def convert_metric_to_imperial(input_str):
     converted_value = value * conversion['factor']
     return f"{round(converted_value, 2)} {conversion['unit']}"
 
+
 def calculate_rate_per_unit(price, size_quantity):
     size_quantity = size_quantity.lower()
     try:
@@ -70,7 +73,7 @@ def calculate_rate_per_unit(price, size_quantity):
             match = re.search(r"([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt|fl oz|pt|ea|ea.|ft)", size_quantity)
             if not match:
                 return "Rate not applicable"
-        
+
         value = float(match.group(1).replace(',', ''))
         unit = match.group(2)
 
@@ -97,13 +100,13 @@ def calculate_rate_per_unit(price, size_quantity):
         elif unit == "pint" or unit == "pt":
             rate = price / (value / 8)  # Rate per gallon
             return f"${rate:.2f} per item"
-        elif unit == "l" or unit == 'liter': 
+        elif unit == "l" or unit == 'liter':
             rate = price / (value / 3.78541178)  # Rate per gallon
             return f"${rate:.2f} per item"
-        elif unit == "qt": 
+        elif unit == "qt":
             rate = price / (value / 4)  # Rate per gallon
             return f"${rate:.2f} per item"
-        elif unit == "ft": 
+        elif unit == "ft":
             rate = price / value  # Rate per foot
             return f"${rate:.2f} per foot"
         else:
@@ -111,41 +114,13 @@ def calculate_rate_per_unit(price, size_quantity):
     except Exception as e:
         return f"Error: {e} {size_quantity} {price}"
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-}
 
-def main(store):
-    frame = []
-    limit = 48
-
-    # https://api.aldi.us/v3/product-search?currency=USD&serviceType=pickup&categoryKey=20&limit=30&offset=0&sort=relevance&servicePoint=465-089
-    url = f"https://api.aldi.us/v3/product-search?currency=USD&serviceType=pickup&servicePoint={store}&limit={limit}"
-
-    response = requests.get(url, headers=headers)
-    response_json = response.json()
-
-    pagination = response_json['meta']['pagination']
-    offset = 0
-    while offset < pagination['totalCount']:
-        url = f"https://api.aldi.us/v3/product-search?currency=USD&serviceType=pickup&limit={pagination['limit']}&offset={offset}&sort=relevance&servicePoint={store}"
-        response = requests.get(url, headers=headers)
-        response_json = response.json()
-        data = response_json['data']
-        for product in data:
-            try:
-                product_name = product['name']
-                product_size = product['sellingSize']
-                product_price = float(product['price']['amountRelevantDisplay'].replace("$", ''))
-                if product_size:
-                    product_rate = calculate_rate_per_unit(product_price, product_size)
-                else:
-                    product_rate = None
-                print(f"Product: {product_name}\nPrice: {product_price}\nSize/Quantity: {product_size}\nRate: {product_rate}\n")
-                frame.append(pd.DataFrame.from_dict({"Product": [product_name], "Price": [product_price], "Rate": [product_rate], "Size": [product_size]}))
-            except Exception as e:
-                print(e)
-                print(product)
-                time.sleep(100)
-        offset += pagination['limit']
-    return pd.concat(frame)
+def main(store=None):
+    """Scrapes Aldi's current storefront (Instacart white-label platform -
+    see #41). `store` is accepted for call-signature compatibility with
+    collector.py but is not yet used to target a specific store - see the
+    same note in tops.py's main() and #43."""
+    if store:
+        print(f"aldis.py: store={store!r} is not used yet (see #43) - "
+              f"scraping the store resolved for this machine's network location instead.")
+    return instacart_storefront.scrape_store(RETAILER_SLUG, HOST, calculate_rate_per_unit)
