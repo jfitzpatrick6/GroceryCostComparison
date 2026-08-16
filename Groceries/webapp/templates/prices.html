@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Prices - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>Prices</h1>
+<form method="get">
+    <input type="text" name="q" placeholder="Search product or store" value="{{ query }}">
+    <button type="submit">Search</button>
+</form>
+
+<table>
+    <thead>
+        <tr>
+            <th><a href="?q={{ query }}&sort=product">Product</a></th>
+            <th><a href="?q={{ query }}&sort=store">Store</a></th>
+            <th><a href="?q={{ query }}&sort=price">Price</a></th>
+            <th>Size</th>
+            <th><a href="?q={{ query }}&sort=unit_price">Unit rate</a></th>
+            <th>Scraped</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row.product }}</td>
+            <td>{{ row.store }}</td>
+            <td>${{ "%.2f"|format(row.price) if row.price is not none else "?" }}</td>
+            <td>{{ row.size }}</td>
+            <td>{% if row.unit_price is not none %}${{ "%.2f"|format(row.unit_price) }} / {{ row.unit }}{% else %}-{% endif %}</td>
+            <td>{{ row.datetime.strftime("%Y-%m-%d %H:%M") if row.datetime else "" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No results{% if query %} for "{{ query }}"{% endif %}.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% if rows %}<p>{{ rows|length }} result(s).</p>{% endif %}
+{% endblock %}

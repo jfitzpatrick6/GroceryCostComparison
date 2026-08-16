@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Grocery Cost Comparison{% endblock %}</title>
+    <style>
+        body { font-family: sans-serif; margin: 2rem; max-width: 60rem; }
+        nav a { margin-right: 1rem; }
+        table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+        th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; }
+        th a { text-decoration: none; }
+        input[type=text] { padding: 0.4rem; width: 20rem; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/prices">Prices</a>
+    </nav>
+    <hr>
+    {% block content %}{% endblock %}
+</body>
+</html>

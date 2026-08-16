@@ -25,8 +25,49 @@ services:
     networks:
       - my_network
 
+  # Tailscale sidecar (see #34) - webapp joins this container's network
+  # namespace below, so it's reachable at whatever tailnet address this
+  # gets, not the public internet or LAN presence. Needs TS_AUTHKEY in
+  # .env (generate one at https://login.tailscale.com/admin/settings/keys).
+  # NOT verified end-to-end from this environment - no Tailscale account
+  # available here. This is the standard documented sidecar pattern, but
+  # confirm the container actually appears in your tailnet before relying
+  # on it. ports: below is a local/LAN fallback for testing independent of
+  # Tailscale auth succeeding.
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: grocery-webapp
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_STATE_DIR=/var/lib/tailscale
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    networks:
+      - my_network
+
+  webapp:
+    build: ./webapp
+    depends_on:
+      - db
+      - tailscale
+    network_mode: service:tailscale
+    environment:
+      - DB_HOST=db
+      - DB_NAME=grocery_db
+      - DB_USER=user
+      - DB_PASS=password
+    restart: unless-stopped
+
 networks:
   my_network:
 
 volumes:
   db_data:
+  tailscale_state:
