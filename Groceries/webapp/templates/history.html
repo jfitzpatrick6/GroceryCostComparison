@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Meal History - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>Meal History</h1>
+<p>Recipes you've actually cooked (marked cooked on the planner), oldest last-made first.</p>
+
+<table>
+    <thead>
+        <tr><th>Recipe</th><th>Times cooked</th><th>Last cooked</th><th></th></tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td><a href="/recipes/{{ row.id }}">{{ row.name }}</a></td>
+            <td>{{ row.times_cooked }}</td>
+            <td>{{ row.last_cooked.strftime("%Y-%m-%d") if row.last_cooked else "" }}</td>
+            <td>
+                <form method="post" action="/history/readd" style="display:inline">
+                    <input type="hidden" name="recipe_id" value="{{ row.id }}">
+                    <button type="submit">Add to this week</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">Nothing marked cooked yet - mark a planned dinner as cooked on the <a href="/planner">planner</a>.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

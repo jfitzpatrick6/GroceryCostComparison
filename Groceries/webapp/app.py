@@ -621,6 +621,11 @@ def ensure_planner_table(cur):
             UNIQUE (week_start, day_of_week, meal)
         );
     """)
+    # "Cooked" is a separate, explicit action from being planned (#32) - a
+    # planned meal that got skipped/swapped shouldn't silently deplete
+    # pantry, so this can't just be inferred from the slot existing.
+    cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS cooked BOOLEAN NOT NULL DEFAULT FALSE;")
+    cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS cooked_at TIMESTAMP;")
 
 
 def week_start_for(d):
@@ -643,7 +648,7 @@ def planner():
             ensure_recipes_tables(cur)
             conn.commit()
             cur.execute("""
-                SELECT s.day_of_week, r.id AS recipe_id, r.name AS recipe_name
+                SELECT s.day_of_week, r.id AS recipe_id, r.name AS recipe_name, s.cooked
                 FROM meal_plan_slots s
                 JOIN recipes r ON r.id = s.recipe_id
                 WHERE s.week_start = %s AND s.meal = 'dinner'
@@ -675,17 +680,74 @@ def set_planner_slot():
         with conn.cursor() as cur:
             ensure_planner_table(cur)
             if recipe_id:
+                # Swapping the recipe resets cooked/cooked_at - it's a
+                # different meal now, shouldn't inherit "already cooked"
+                # from whatever used to be in this slot (see #32).
                 cur.execute("""
                     INSERT INTO meal_plan_slots (week_start, day_of_week, meal, recipe_id)
                     VALUES (%s, %s, 'dinner', %s)
                     ON CONFLICT (week_start, day_of_week, meal)
-                    DO UPDATE SET recipe_id = EXCLUDED.recipe_id
+                    DO UPDATE SET recipe_id = EXCLUDED.recipe_id, cooked = FALSE, cooked_at = NULL
                 """, (week_start, day_of_week, recipe_id))
             else:
                 cur.execute(
                     "DELETE FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s AND meal = 'dinner'",
                     (week_start, day_of_week),
                 )
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("planner", week=week_start))
+
+
+def deplete_pantry_for_recipe(cur, recipe_id):
+    """Subtracts a cooked recipe's ingredients from pantry (#30/#32). Same
+    conservative matching as apply_pantry: only when both sides have a
+    clean numeric amount and the exact same unit; clamps at 0 rather than
+    going negative."""
+    cur.execute("SELECT name, amount, unit FROM recipe_ingredients WHERE recipe_id = %s", (recipe_id,))
+    for ing in cur.fetchall():
+        if not ing["amount"]:
+            continue
+        try:
+            used = float(ing["amount"])
+        except (TypeError, ValueError):
+            continue
+        cur.execute("SELECT id, amount, unit FROM pantry_items WHERE lower(name) = lower(%s)", (ing["name"],))
+        row = cur.fetchone()
+        if not row or row["amount"] is None or row["unit"] != ing["unit"]:
+            continue
+        remaining = max(0.0, float(row["amount"]) - used)
+        cur.execute("UPDATE pantry_items SET amount = %s, updated_at = now() WHERE id = %s", (remaining, row["id"]))
+
+
+@app.route("/planner/cook", methods=["POST"])
+def mark_cooked():
+    week_start = request.form["week_start"]
+    day_of_week = int(request.form["day_of_week"])
+    cooked = request.form["cooked"] == "1"
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_planner_table(cur)
+            ensure_pantry_table(cur)
+            cur.execute(
+                "SELECT id, recipe_id FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s AND meal = 'dinner'",
+                (week_start, day_of_week),
+            )
+            slot = cur.fetchone()
+            if slot:
+                cur.execute(
+                    "UPDATE meal_plan_slots SET cooked = %s, cooked_at = CASE WHEN %s THEN now() ELSE NULL END WHERE id = %s",
+                    (cooked, cooked, slot["id"]),
+                )
+                # Deplete on marking cooked, not on un-marking (matches the
+                # restock-only-on-check, not-on-uncheck asymmetry in #30 -
+                # manual pantry correction is always available instead of
+                # trying to make this perfectly reversible).
+                if cooked:
+                    deplete_pantry_for_recipe(cur, slot["recipe_id"])
         conn.commit()
     finally:
         conn.close()
@@ -758,6 +820,56 @@ def apply_pantry(cur, combined):
         remaining = max(0.0, needed - have)
         ing["need_amount"] = str(remaining).rstrip("0").rstrip(".") if "." in str(remaining) else str(remaining)
     return combined
+
+
+@app.route("/history")
+def history():
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_planner_table(cur)
+            conn.commit()
+            cur.execute("""
+                SELECT r.id, r.name, count(*) AS times_cooked, max(s.cooked_at) AS last_cooked
+                FROM meal_plan_slots s
+                JOIN recipes r ON r.id = s.recipe_id
+                WHERE s.cooked = TRUE
+                GROUP BY r.id, r.name
+                ORDER BY last_cooked ASC
+            """)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return render_template("history.html", rows=rows)
+
+
+@app.route("/history/readd", methods=["POST"])
+def readd_recipe():
+    """Re-add a recipe to this week's plan in one click (#32) - fills the
+    first open dinner slot; if the week's fully planned already, does
+    nothing rather than overwriting something you already chose."""
+    recipe_id = request.form["recipe_id"]
+    week_start = week_start_for(datetime.date.today())
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            ensure_planner_table(cur)
+            cur.execute(
+                "SELECT day_of_week FROM meal_plan_slots WHERE week_start = %s AND meal = 'dinner'",
+                (week_start,),
+            )
+            taken = {row[0] for row in cur.fetchall()}
+            open_day = next((d for d in range(7) if d not in taken), None)
+            if open_day is not None:
+                cur.execute(
+                    "INSERT INTO meal_plan_slots (week_start, day_of_week, meal, recipe_id) VALUES (%s, %s, 'dinner', %s)",
+                    (week_start, open_day, recipe_id),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("planner", week=week_start))
 
 
 @app.route("/planner/ingredients")

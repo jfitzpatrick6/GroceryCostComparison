@@ -12,7 +12,7 @@
 
 <table>
     <thead>
-        <tr><th>Day</th><th>Dinner</th></tr>
+        <tr><th>Day</th><th>Dinner</th><th>Cooked?</th></tr>
     </thead>
     <tbody>
         {% for day in days %}
@@ -30,6 +30,16 @@
                     </select>
                     <noscript><button type="submit">Set</button></noscript>
                 </form>
+            </td>
+            <td>
+                {% if day.recipe %}
+                <form method="post" action="/planner/cook" style="display:inline">
+                    <input type="hidden" name="week_start" value="{{ week_start }}">
+                    <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                    <input type="hidden" name="cooked" value="{{ 0 if day.recipe.cooked else 1 }}">
+                    <button type="submit">{{ "Undo" if day.recipe.cooked else "Mark cooked" }}</button>
+                </form>
+                {% endif %}
             </td>
         </tr>
         {% endfor %}
