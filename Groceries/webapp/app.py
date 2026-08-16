@@ -25,6 +25,15 @@ def get_connection():
     return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
 
 
+def price_data_available(cur):
+    """grocery_prices_latest only exists once collector.py has run at least
+    one scrape - the webapp doesn't own that schema. Pages that join
+    against it need to degrade gracefully (no price data yet) rather than
+    500 on a fresh deployment with no scrape history."""
+    cur.execute("SELECT to_regclass('grocery_prices_latest') IS NOT NULL AS table_exists")
+    return cur.fetchone()["table_exists"]
+
+
 def ensure_staples_table(cur):
     # Not a trip list (see /staples vs the future grocery list, #22) - just
     # a short "we always buy these" pin list, keyed to exact scraped
@@ -64,8 +73,11 @@ def prices():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (like_query, like_query))
-            rows = cur.fetchall()
+            if price_data_available(cur):
+                cur.execute(sql, (like_query, like_query))
+                rows = cur.fetchall()
+            else:
+                rows = []
     finally:
         conn.close()
 
@@ -79,12 +91,19 @@ def staples():
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             ensure_staples_table(cur)
             conn.commit()
-            cur.execute("""
-                SELECT s.product, s.store, p.price, p.size, p.unit_price, p.unit, p.datetime
-                FROM staples s
-                LEFT JOIN grocery_prices_latest p ON p.product = s.product AND p.store = s.store
-                ORDER BY s.product, s.store
-            """)
+            if price_data_available(cur):
+                cur.execute("""
+                    SELECT s.product, s.store, p.price, p.size, p.unit_price, p.unit, p.datetime
+                    FROM staples s
+                    LEFT JOIN grocery_prices_latest p ON p.product = s.product AND p.store = s.store
+                    ORDER BY s.product, s.store
+                """)
+            else:
+                cur.execute("""
+                    SELECT s.product, s.store, NULL AS price, NULL AS size, NULL AS unit_price, NULL AS unit, NULL AS datetime
+                    FROM staples s
+                    ORDER BY s.product, s.store
+                """)
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -153,15 +172,22 @@ def grocery_list():
             # real cross-store matching (not built yet), just enough to show
             # "cheapest store" when a list item happens to match a product
             # name verbatim. Unmatched items still show, just without this.
-            for item in items:
-                cur.execute("""
-                    SELECT store, price, unit_price, unit
-                    FROM grocery_prices_latest
-                    WHERE product ILIKE %s
-                    ORDER BY unit_price ASC NULLS LAST
-                    LIMIT 1
-                """, (item["name"],))
-                item["match"] = cur.fetchone()
+            # grocery_prices_latest only exists once a scrape has actually
+            # run - skip matching entirely rather than 500ing on a fresh
+            # deployment with no scrape history yet.
+            if price_data_available(cur):
+                for item in items:
+                    cur.execute("""
+                        SELECT store, price, unit_price, unit
+                        FROM grocery_prices_latest
+                        WHERE product ILIKE %s
+                        ORDER BY unit_price ASC NULLS LAST
+                        LIMIT 1
+                    """, (item["name"],))
+                    item["match"] = cur.fetchone()
+            else:
+                for item in items:
+                    item["match"] = None
     finally:
         conn.close()
     return render_template("list.html", items=items)
@@ -494,30 +520,20 @@ def set_planner_slot():
     return redirect(url_for("planner", week=week_start))
 
 
-@app.route("/planner/ingredients")
-def planner_ingredients():
-    week_start = request.args.get("week") or week_start_for(datetime.date.today())
+def get_week_ingredients(cur, week_start):
+    """Combined (name, unit, amount) list for a planned week. Sums amounts
+    where numeric and sharing a unit, otherwise lists them separately -
+    see #28, exact unit math is explicitly OK to be sloppy for v1 (real
+    recipe-unit handling is #36's job later)."""
+    cur.execute("""
+        SELECT i.name, i.amount, i.unit
+        FROM meal_plan_slots s
+        JOIN recipe_ingredients i ON i.recipe_id = s.recipe_id
+        WHERE s.week_start = %s AND s.meal = 'dinner'
+        ORDER BY i.name
+    """, (week_start,))
+    ingredient_rows = cur.fetchall()
 
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_planner_table(cur)
-            conn.commit()
-            cur.execute("""
-                SELECT i.name, i.amount, i.unit, r.name AS recipe_name
-                FROM meal_plan_slots s
-                JOIN recipe_ingredients i ON i.recipe_id = s.recipe_id
-                JOIN recipes r ON r.id = s.recipe_id
-                WHERE s.week_start = %s AND s.meal = 'dinner'
-                ORDER BY i.name
-            """, (week_start,))
-            ingredient_rows = cur.fetchall()
-    finally:
-        conn.close()
-
-    # Group by (name, unit); sum amounts where numeric, otherwise just list
-    # them - see #28, exact unit math is explicitly OK to be sloppy for v1
-    # (real recipe-unit handling is #36's job later).
     grouped = {}
     for row in ingredient_rows:
         key = (row["name"].lower(), row["unit"])
@@ -543,8 +559,76 @@ def planner_ingredients():
             display_amount = ""
         combined.append({"name": entry["name"], "unit": entry["unit"], "amount": display_amount})
     combined.sort(key=lambda e: e["name"].lower())
+    return combined
 
+
+@app.route("/planner/ingredients")
+def planner_ingredients():
+    week_start = request.args.get("week") or week_start_for(datetime.date.today())
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_planner_table(cur)
+            conn.commit()
+            combined = get_week_ingredients(cur, week_start)
+    finally:
+        conn.close()
     return render_template("planner_ingredients.html", week_start=week_start, combined=combined)
+
+
+_QTY_LINE = re.compile(r"^\s*([\d.]+)\s*(\S*)\s*$")
+
+
+def merge_qty(existing_qty, new_amount, new_unit):
+    """Combines a grocery-list item's free-text qty with a new amount/unit
+    from the planner. Sums when both are numeric and share a unit,
+    otherwise concatenates rather than guessing or dropping data."""
+    new_qty = f"{new_amount} {new_unit}".strip() if new_amount else (new_unit or "")
+    if not existing_qty:
+        return new_qty or None
+    if not new_qty:
+        return existing_qty
+
+    existing_match = _QTY_LINE.match(existing_qty)
+    if existing_match and new_amount:
+        existing_amount, existing_unit = existing_match.groups()
+        if existing_unit == (new_unit or ""):
+            try:
+                total = float(existing_amount) + float(new_amount)
+                total_str = str(total).rstrip("0").rstrip(".") if "." in str(total) else str(total)
+                return f"{total_str} {existing_unit}".strip()
+            except ValueError:
+                pass
+    return f"{existing_qty} + {new_qty}"
+
+
+@app.route("/planner/add_to_list", methods=["POST"])
+def add_week_to_list():
+    week_start = request.form["week_start"]
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_planner_table(cur)
+            ensure_list_table(cur)
+            conn.commit()
+            combined = get_week_ingredients(cur, week_start)
+
+            for ing in combined:
+                cur.execute(
+                    "SELECT id, qty FROM grocery_list_items WHERE lower(name) = lower(%s) AND checked = FALSE LIMIT 1",
+                    (ing["name"],),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    merged_qty = merge_qty(existing["qty"], ing["amount"], ing["unit"])
+                    cur.execute("UPDATE grocery_list_items SET qty = %s WHERE id = %s", (merged_qty, existing["id"]))
+                else:
+                    qty = f"{ing['amount']} {ing['unit']}".strip() if ing["amount"] else (ing["unit"] or None)
+                    cur.execute("INSERT INTO grocery_list_items (name, qty) VALUES (%s, %s)", (ing["name"], qty))
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("grocery_list"))
 
 
 if __name__ == "__main__":

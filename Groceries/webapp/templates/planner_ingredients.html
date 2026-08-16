@@ -11,4 +11,11 @@
     <li>No dinners planned this week.</li>
     {% endfor %}
 </ul>
+
+{% if combined %}
+<form method="post" action="/planner/add_to_list">
+    <input type="hidden" name="week_start" value="{{ week_start }}">
+    <button type="submit">Add to grocery list</button>
+</form>
+{% endif %}
 {% endblock %}
