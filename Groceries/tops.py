@@ -80,7 +80,7 @@ def changeStore(store_id, session_token):
     url = "https://shop.topsmarkets.com/api/v2/user"
     data = {
         "has_changed_store": True,
-        "store_id": 102
+        "store_id": store_id
     }
     headers2 = {
         "Authorization": f"Bearer {session_token}",
@@ -88,10 +88,8 @@ def changeStore(store_id, session_token):
     }
     response = requests.patch(url, headers=headers2, json=data)
     response_json = response.json()
-    store_id = response_json.get("user", {}).get("store", {}).get("id")
-    if store_id != store_id:
-        return False
-    return True
+    confirmed_store_id = response_json.get("user", {}).get("store", {}).get("id")
+    return str(confirmed_store_id) == str(store_id)
 
 def getCategories(session_token, store_id):
     url = f"https://shop.topsmarkets.com/api/v2/categories/store/{store_id}"
@@ -151,7 +149,8 @@ def getDataByCategory(category, session_token):
 def main(store_id):
     data = []
     session = getAuth()
-    changeStore(store_id ,session)
+    if not changeStore(store_id, session):
+        raise RuntimeError(f"Tops: failed to switch to store_id={store_id}")
     categories = getCategories(session, store_id)
     for category in categories:
         data.append(getDataByCategory(category, session))
