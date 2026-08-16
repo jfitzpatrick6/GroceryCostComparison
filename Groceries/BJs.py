@@ -17,17 +17,36 @@ def main(store):
         for product in products:
             try:
                 product_name = product['value']
-                product_price = product['data']['prices'][store]['value']
-                product_price = float(product_price.strip().removeprefix("$"))
-                match = re.search(r"(([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt))", product_name.lower().replace(',', ''))
-                if match:
-                    calcmatch = re.search(r"([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt).\/([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt)", product_name.lower().replace(',', ''))
-                    if calcmatch:
-                        product_size = str(float(calcmatch.group(1).replace(',', '')) * float(calcmatch.group(3).replace(',', ''))) + ' ' + calcmatch.group(4)
-                    else:
-                        product_size = match.group(1)
+                facets = {f['name']: f['values'][0] for f in product.get('data', {}).get('facets', []) if f.get('values')}
+
+                if facets.get('weighted_item') == 'Y':
+                    # By-weight items (produce, fresh meat/poultry) don't carry
+                    # a `prices` field at all - BJs only exposes a min/max price
+                    # over the pack's min/max weight (see #16). There's no
+                    # single "the" price for these (real packages vary), so
+                    # this uses the midpoint of both ranges as an honest
+                    # estimate rather than pretending it's exact.
+                    attrs = product.get('data', {}).get('attr', {})
+                    min_price, max_price = facets.get('min_price'), facets.get('max_price')
+                    min_weight, max_weight = attrs.get('minpackweight'), attrs.get('maxpackweight')
+                    if None in (min_price, max_price, min_weight, max_weight):
+                        raise ValueError(f"weighted item missing price/weight range: {facets}, {attrs}")
+                    product_price = (float(min_price) + float(max_price)) / 2
+                    avg_weight = (float(min_weight) + float(max_weight)) / 2
+                    product_size = f"{avg_weight} lb"
                 else:
-                    product_size = 'N/A'
+                    product_price = product['data']['prices'][store]['value']
+                    product_price = float(product_price.strip().removeprefix("$"))
+                    match = re.search(r"(([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt))", product_name.lower().replace(',', ''))
+                    if match:
+                        calcmatch = re.search(r"([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt).\/([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt)", product_name.lower().replace(',', ''))
+                        if calcmatch:
+                            product_size = str(float(calcmatch.group(1).replace(',', '')) * float(calcmatch.group(3).replace(',', ''))) + ' ' + calcmatch.group(4)
+                        else:
+                            product_size = match.group(1)
+                    else:
+                        product_size = 'N/A'
+
                 data.append(pd.DataFrame.from_dict({"Product": [product_name], "Price": [product_price], "Rate": [calculate_rate_per_unit(product_price, product_size)], "Size": [product_size]}))
             except Exception as e:
                 print(e)
