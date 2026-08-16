@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Where to Buy - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>Where to Buy</h1>
+<p><a href="/list">&laquo; Back to list</a></p>
+
+<h2>Cheapest store per item</h2>
+<table>
+    <thead>
+        <tr><th>Item</th><th>Qty</th><th>Store</th><th>Price</th><th>Size</th><th>Unit rate</th></tr>
+    </thead>
+    <tbody>
+        {% for p in per_item %}
+        <tr>
+            <td>{{ p.item.name }}</td>
+            <td>{{ p.item.qty or "" }}</td>
+            <td>{{ p.cheapest.store }}</td>
+            <td>${{ "%.2f"|format(p.cheapest.price) }}</td>
+            <td>{{ p.cheapest.size }}</td>
+            <td>{% if p.cheapest.unit_price is not none %}${{ "%.2f"|format(p.cheapest.unit_price) }} / {{ p.cheapest.unit }}{% else %}-{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No matched items on your list yet.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if unmatched %}
+<p><strong>No price match found for:</strong> {{ unmatched|map(attribute='name')|join(', ') }}</p>
+{% endif %}
+
+{% if split_total is not none %}
+<h2>Trip total comparison</h2>
+<table>
+    <thead>
+        <tr><th>Option</th><th>Covers</th><th>Total</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><strong>Split across cheapest stores</strong></td>
+            <td>{{ per_item|length }} / {{ per_item|length }}</td>
+            <td>${{ "%.2f"|format(split_total) }}</td>
+        </tr>
+        {% for s in store_totals %}
+        <tr>
+            <td>Shop only at {{ s.store }}</td>
+            <td>{{ s.covered }} / {{ s.of_total }}{% if not s.covers_all %} (missing some items){% endif %}</td>
+            <td>${{ "%.2f"|format(s.total) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

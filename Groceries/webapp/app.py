@@ -239,6 +239,68 @@ def remove_list_item():
     return redirect(url_for("grocery_list"))
 
 
+@app.route("/list/where-to-buy")
+def where_to_buy():
+    """The payoff feature (#31): for each unchecked list item, the cheapest
+    store; plus a "shop one store" vs "split across stores" total
+    comparison. v1 - cheapest per item only, no store-count minimization,
+    and matching is the same naive ILIKE stand-in used elsewhere (#25's
+    real cross-store matching isn't built yet)."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_list_table(cur)
+            conn.commit()
+            cur.execute("SELECT id, name, qty FROM grocery_list_items WHERE checked = FALSE ORDER BY added_at")
+            items = cur.fetchall()
+
+            per_item = []
+            unmatched = []
+            all_stores = set()
+
+            if price_data_available(cur):
+                for item in items:
+                    cur.execute("""
+                        SELECT store, price, size, unit_price, unit
+                        FROM grocery_prices_latest
+                        WHERE product ILIKE %s
+                        ORDER BY unit_price ASC NULLS LAST, price ASC
+                    """, (item["name"],))
+                    matches = cur.fetchall()
+                    if not matches:
+                        unmatched.append(item)
+                        continue
+                    by_store = {m["store"]: m for m in matches}
+                    per_item.append({"item": item, "cheapest": matches[0], "by_store": by_store})
+                    all_stores.update(by_store.keys())
+            else:
+                unmatched = list(items)
+    finally:
+        conn.close()
+
+    split_total = sum(float(p["cheapest"]["price"]) for p in per_item) if per_item else None
+
+    store_totals = []
+    for store in sorted(all_stores):
+        total = 0.0
+        covered = 0
+        for p in per_item:
+            match = p["by_store"].get(store)
+            if match:
+                total += float(match["price"])
+                covered += 1
+        store_totals.append({
+            "store": store, "total": total, "covered": covered,
+            "of_total": len(per_item), "covers_all": covered == len(per_item),
+        })
+    store_totals.sort(key=lambda s: (not s["covers_all"], s["total"]))
+
+    return render_template(
+        "where_to_buy.html", per_item=per_item, unmatched=unmatched,
+        split_total=split_total, store_totals=store_totals,
+    )
+
+
 RECIPE_UNIT_WORDS = (
     "cups?|tbsp|tablespoons?|tsp|teaspoons?|oz|ounces?|lbs?|pounds?|"
     "g|grams?|kg|ml|l|liters?|cloves?|cans?|pinch|dash|each|ea|slices?|pieces?"
