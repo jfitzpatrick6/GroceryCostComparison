@@ -1,3 +1,5 @@
+import time
+
 import pandas as pd
 import psycopg2
 import os
@@ -20,6 +22,20 @@ DB_PASS = os.getenv("DB_PASS", "password")
 REQUIRED_STORE_ENV = ["BJS_STORE", "WALMARTSTORE"]
 
 
+def _timed_scrape(store_name, scrape_fn, store_id):
+    """Runs one scraper, logging item count / elapsed time / ms per item.
+    Lets exceptions propagate as before - a broken scraper should still
+    abort the run loudly (see #24), this only adds visibility into runs
+    that do complete."""
+    start = time.monotonic()
+    df = scrape_fn(store_id)
+    elapsed = time.monotonic() - start
+    count = len(df)
+    ms_per_item = f"{elapsed * 1000 / count:.0f} ms/item" if count else "n/a"
+    print(f"[{store_name}] {count} items in {elapsed:.1f}s ({ms_per_item})")
+    return df
+
+
 def get_data():
     """Calls all of the main functions for each scrape, and returns a single DataFrame."""
     missing = [name for name in REQUIRED_STORE_ENV if not os.getenv(name)]
@@ -31,25 +47,30 @@ def get_data():
     bjs_store = os.getenv("BJS_STORE")
     walmart_store = os.getenv("WALMARTSTORE")
 
-    aldi = aldis.main(aldi_store)
+    run_start = time.monotonic()
+
+    aldi = _timed_scrape("Aldis", aldis.main, aldi_store)
     aldi['store'] = 'Aldis'
     aldi['store_id'] = aldi_store
 
-    top = tops.main(tops_store)
+    top = _timed_scrape("Tops", tops.main, tops_store)
     top['store'] = 'Tops'
     top['store_id'] = tops_store
 
-    BJ = BJs.main(bjs_store)
+    BJ = _timed_scrape("BJs", BJs.main, bjs_store)
     BJ['store'] = 'BJs'
     BJ['store_id'] = bjs_store
 
-    Wal = Walmart.main(walmart_store)
+    Wal = _timed_scrape("Walmart", Walmart.main, walmart_store)
     Wal['store'] = 'Walmart'
     Wal['store_id'] = walmart_store
 
     total_df = pd.concat([aldi, top, BJ, Wal], ignore_index=True)
     total_df.dropna(how="all", inplace=True)
     total_df['Datetime'] = pd.Timestamp.now()
+
+    total_elapsed = time.monotonic() - run_start
+    print(f"Total: {len(total_df)} items across all stores in {total_elapsed:.1f}s")
 
     return total_df
 
