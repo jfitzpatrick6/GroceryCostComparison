@@ -16,6 +16,7 @@
             <th>Size</th>
             <th><a href="?q={{ query }}&sort=unit_price">Unit rate</a></th>
             <th>Scraped</th>
+            <th></th>
         </tr>
     </thead>
     <tbody>
@@ -27,9 +28,16 @@
             <td>{{ row.size }}</td>
             <td>{% if row.unit_price is not none %}${{ "%.2f"|format(row.unit_price) }} / {{ row.unit }}{% else %}-{% endif %}</td>
             <td>{{ row.datetime.strftime("%Y-%m-%d %H:%M") if row.datetime else "" }}</td>
+            <td>
+                <form method="post" action="/staples/pin" style="display:inline">
+                    <input type="hidden" name="product" value="{{ row.product }}">
+                    <input type="hidden" name="store" value="{{ row.store }}">
+                    <button type="submit">Pin</button>
+                </form>
+            </td>
         </tr>
         {% else %}
-        <tr><td colspan="6">No results{% if query %} for "{{ query }}"{% endif %}.</td></tr>
+        <tr><td colspan="7">No results{% if query %} for "{{ query }}"{% endif %}.</td></tr>
         {% endfor %}
     </tbody>
 </table>
