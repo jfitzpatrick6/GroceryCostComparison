@@ -80,7 +80,7 @@ def store_data(df):
                     CREATE TABLE IF NOT EXISTS grocery_prices (
                         id SERIAL PRIMARY KEY,
                         product TEXT,
-                        price TEXT,
+                        price NUMERIC,
                         rate TEXT,
                         size TEXT,
                         store TEXT,
@@ -88,11 +88,22 @@ def store_data(df):
                         datetime TIMESTAMP
                     );
                 """)
-                # Idempotent - ALTER TABLE ADD COLUMN IF NOT EXISTS is a
-                # no-op if these already exist, so this is safe to run every
-                # time rather than needing a one-off migration step.
+                # Idempotent - safe to run every time rather than needing a
+                # one-off migration step. ADD COLUMN IF NOT EXISTS is a
+                # no-op if these already exist; ALTER COLUMN TYPE...USING
+                # is a harmless numeric->numeric cast if price is already
+                # NUMERIC (only matters for a table created before this).
                 cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit_price NUMERIC;")
                 cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit TEXT;")
+                cur.execute("ALTER TABLE grocery_prices ALTER COLUMN price TYPE NUMERIC USING price::numeric;")
+                # Cheap way to get "latest scrape only" per product/store
+                # without every consumer re-deriving it (see #11).
+                cur.execute("""
+                    CREATE OR REPLACE VIEW grocery_prices_latest AS
+                    SELECT DISTINCT ON (product, store) *
+                    FROM grocery_prices
+                    ORDER BY product, store, datetime DESC;
+                """)
 
                 for _, row in df.iterrows():
                     unit_price, unit = _numeric_rate(row['Price'], row['Size'])
