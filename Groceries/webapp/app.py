@@ -1,3 +1,4 @@
+import datetime
 import os
 import re
 
@@ -219,6 +220,26 @@ RECIPE_UNIT_WORDS = (
 _INGREDIENT_LINE = re.compile(
     rf"^\s*([\d./]+)?\s*({RECIPE_UNIT_WORDS})?\s*(.*?)\s*$", re.IGNORECASE
 )
+# Canonical form for each recognized unit - the regex above matches plurals
+# and synonyms ("cup"/"cups", "tbsp"/"tablespoon"/"tablespoons") but the raw
+# matched text would keep them distinct, which breaks aggregating "2 cups"
+# with "1 cup" across recipes in the planner (#28). Normalize once here.
+_UNIT_CANONICAL = {
+    "cup": "cup", "cups": "cup",
+    "tbsp": "tbsp", "tablespoon": "tbsp", "tablespoons": "tbsp",
+    "tsp": "tsp", "teaspoon": "tsp", "teaspoons": "tsp",
+    "oz": "oz", "ounce": "oz", "ounces": "oz",
+    "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb",
+    "g": "g", "gram": "g", "grams": "g",
+    "kg": "kg", "ml": "ml",
+    "l": "l", "liter": "l", "liters": "l",
+    "clove": "clove", "cloves": "clove",
+    "can": "can", "cans": "can",
+    "pinch": "pinch", "dash": "dash",
+    "each": "each", "ea": "each",
+    "slice": "slice", "slices": "slice",
+    "piece": "piece", "pieces": "piece",
+}
 
 
 def parse_ingredient_line(line):
@@ -230,7 +251,8 @@ def parse_ingredient_line(line):
     amount, unit, name = match.groups()
     if not name:
         return None, None, line.strip()
-    return amount, (unit.lower() if unit else None), name
+    canonical_unit = _UNIT_CANONICAL.get(unit.lower()) if unit else None
+    return amount, canonical_unit, name
 
 
 def ensure_recipes_tables(cur):
@@ -382,6 +404,147 @@ def delete_recipe(recipe_id):
     finally:
         conn.close()
     return redirect(url_for("recipes"))
+
+
+DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+
+def ensure_planner_table(cur):
+    # Dinner only for v1 ("dinner first" per #28) - `meal` column exists so
+    # breakfast/lunch can be added later without a schema change, but the
+    # UI only ever writes 'dinner' for now.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS meal_plan_slots (
+            id SERIAL PRIMARY KEY,
+            week_start DATE NOT NULL,
+            day_of_week INTEGER NOT NULL,
+            meal TEXT NOT NULL DEFAULT 'dinner',
+            recipe_id INTEGER REFERENCES recipes(id) ON DELETE SET NULL,
+            UNIQUE (week_start, day_of_week, meal)
+        );
+    """)
+
+
+def week_start_for(d):
+    """Sunday on or before the given date."""
+    return d - datetime.timedelta(days=(d.weekday() + 1) % 7)
+
+
+@app.route("/planner")
+def planner():
+    week_param = request.args.get("week")
+    if week_param:
+        week_start = datetime.date.fromisoformat(week_param)
+    else:
+        week_start = week_start_for(datetime.date.today())
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_planner_table(cur)
+            ensure_recipes_tables(cur)
+            conn.commit()
+            cur.execute("""
+                SELECT s.day_of_week, r.id AS recipe_id, r.name AS recipe_name
+                FROM meal_plan_slots s
+                JOIN recipes r ON r.id = s.recipe_id
+                WHERE s.week_start = %s AND s.meal = 'dinner'
+            """, (week_start,))
+            assigned = {row["day_of_week"]: row for row in cur.fetchall()}
+            cur.execute("SELECT id, name FROM recipes ORDER BY name")
+            all_recipes = cur.fetchall()
+    finally:
+        conn.close()
+
+    days = [{"index": i, "name": DAY_NAMES[i], "date": week_start + datetime.timedelta(days=i),
+             "recipe": assigned.get(i)} for i in range(7)]
+
+    return render_template(
+        "planner.html", week_start=week_start, days=days, all_recipes=all_recipes,
+        prev_week=week_start - datetime.timedelta(days=7),
+        next_week=week_start + datetime.timedelta(days=7),
+    )
+
+
+@app.route("/planner/set", methods=["POST"])
+def set_planner_slot():
+    week_start = request.form["week_start"]
+    day_of_week = int(request.form["day_of_week"])
+    recipe_id = request.form.get("recipe_id") or None
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            ensure_planner_table(cur)
+            if recipe_id:
+                cur.execute("""
+                    INSERT INTO meal_plan_slots (week_start, day_of_week, meal, recipe_id)
+                    VALUES (%s, %s, 'dinner', %s)
+                    ON CONFLICT (week_start, day_of_week, meal)
+                    DO UPDATE SET recipe_id = EXCLUDED.recipe_id
+                """, (week_start, day_of_week, recipe_id))
+            else:
+                cur.execute(
+                    "DELETE FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s AND meal = 'dinner'",
+                    (week_start, day_of_week),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("planner", week=week_start))
+
+
+@app.route("/planner/ingredients")
+def planner_ingredients():
+    week_start = request.args.get("week") or week_start_for(datetime.date.today())
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_planner_table(cur)
+            conn.commit()
+            cur.execute("""
+                SELECT i.name, i.amount, i.unit, r.name AS recipe_name
+                FROM meal_plan_slots s
+                JOIN recipe_ingredients i ON i.recipe_id = s.recipe_id
+                JOIN recipes r ON r.id = s.recipe_id
+                WHERE s.week_start = %s AND s.meal = 'dinner'
+                ORDER BY i.name
+            """, (week_start,))
+            ingredient_rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    # Group by (name, unit); sum amounts where numeric, otherwise just list
+    # them - see #28, exact unit math is explicitly OK to be sloppy for v1
+    # (real recipe-unit handling is #36's job later).
+    grouped = {}
+    for row in ingredient_rows:
+        key = (row["name"].lower(), row["unit"])
+        grouped.setdefault(key, {"name": row["name"], "unit": row["unit"], "amounts": []})
+        if row["amount"]:
+            grouped[key]["amounts"].append(row["amount"])
+
+    combined = []
+    for entry in grouped.values():
+        total = 0.0
+        all_numeric = True
+        for amt in entry["amounts"]:
+            try:
+                total += float(amt)
+            except ValueError:
+                all_numeric = False
+                break
+        if entry["amounts"] and all_numeric:
+            display_amount = str(total).rstrip("0").rstrip(".") if "." in str(total) else str(total)
+        elif entry["amounts"]:
+            display_amount = " + ".join(entry["amounts"])
+        else:
+            display_amount = ""
+        combined.append({"name": entry["name"], "unit": entry["unit"], "amount": display_amount})
+    combined.sort(key=lambda e: e["name"].lower())
+
+    return render_template("planner_ingredients.html", week_start=week_start, combined=combined)
 
 
 if __name__ == "__main__":

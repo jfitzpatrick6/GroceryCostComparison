@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Ingredients needed - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>Ingredients needed - week of {{ week_start }}</h1>
+<p><a href="/planner?week={{ week_start }}">&laquo; Back to planner</a></p>
+
+<ul>
+    {% for item in combined %}
+    <li>{% if item.amount %}{{ item.amount }} {% endif %}{% if item.unit %}{{ item.unit }} {% endif %}{{ item.name }}</li>
+    {% else %}
+    <li>No dinners planned this week.</li>
+    {% endfor %}
+</ul>
+{% endblock %}

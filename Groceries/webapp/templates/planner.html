@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Weekly Planner - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>Weekly Planner</h1>
+<p>
+    <a href="/planner?week={{ prev_week }}">&laquo; Previous week</a>
+    &nbsp;|&nbsp;
+    Week of {{ week_start }}
+    &nbsp;|&nbsp;
+    <a href="/planner?week={{ next_week }}">Next week &raquo;</a>
+</p>
+
+<table>
+    <thead>
+        <tr><th>Day</th><th>Dinner</th></tr>
+    </thead>
+    <tbody>
+        {% for day in days %}
+        <tr>
+            <td>{{ day.name }} ({{ day.date }})</td>
+            <td>
+                <form method="post" action="/planner/set">
+                    <input type="hidden" name="week_start" value="{{ week_start }}">
+                    <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                    <select name="recipe_id" onchange="this.form.submit()">
+                        <option value="">-- none --</option>
+                        {% for r in all_recipes %}
+                        <option value="{{ r.id }}" {% if day.recipe and day.recipe.recipe_id == r.id %}selected{% endif %}>{{ r.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <noscript><button type="submit">Set</button></noscript>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<p><a href="/planner/ingredients?week={{ week_start }}">Ingredients needed this week &raquo;</a></p>
+{% endblock %}
