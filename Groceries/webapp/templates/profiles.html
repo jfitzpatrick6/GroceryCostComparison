@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Profiles - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>Household Profiles</h1>
+<p>No passwords - Tailscale is what actually keeps this app private. This is just so edits show whose they were.</p>
+
+<form method="post" action="/profiles/add">
+    <input type="text" name="name" placeholder="Name (e.g. Jake)" required>
+    <button type="submit">Add</button>
+</form>
+
+<table>
+    <thead>
+        <tr><th>Name</th><th></th></tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row.name }}{% if row.name == active %} (you){% endif %}</td>
+            <td>
+                <form method="post" action="/profiles/remove" style="display:inline">
+                    <input type="hidden" name="id" value="{{ row.id }}">
+                    <button type="submit">Remove</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="2">No profiles yet - add household members above.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

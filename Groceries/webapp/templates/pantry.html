@@ -13,7 +13,7 @@
 
 <table>
     <thead>
-        <tr><th>Item</th><th>Amount</th><th>Unit</th><th></th></tr>
+        <tr><th>Item</th><th>Amount</th><th>Unit</th><th>Last updated by</th><th></th></tr>
     </thead>
     <tbody>
         {% for item in items %}
@@ -21,6 +21,7 @@
             <td>{{ item.name }}</td>
             <td>{{ item.amount if item.amount is not none else "" }}</td>
             <td>{{ item.unit or "" }}</td>
+            <td style="color:#999">{{ item.updated_by or "?" }}</td>
             <td>
                 <form method="post" action="/pantry/remove" style="display:inline">
                     <input type="hidden" name="id" value="{{ item.id }}">
@@ -29,7 +30,7 @@
             </td>
         </tr>
         {% else %}
-        <tr><td colspan="4">Pantry is empty.</td></tr>
+        <tr><td colspan="5">Pantry is empty.</td></tr>
         {% endfor %}
     </tbody>
 </table>

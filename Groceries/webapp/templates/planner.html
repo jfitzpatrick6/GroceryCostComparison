@@ -39,6 +39,9 @@
                     <input type="hidden" name="cooked" value="{{ 0 if day.recipe.cooked else 1 }}">
                     <button type="submit">{{ "Undo" if day.recipe.cooked else "Mark cooked" }}</button>
                 </form>
+                {% if day.recipe.cooked and day.recipe.cooked_by %}
+                <span style="color:#999">by {{ day.recipe.cooked_by }}</span>
+                {% endif %}
                 {% endif %}
             </td>
         </tr>

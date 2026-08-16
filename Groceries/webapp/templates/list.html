@@ -18,6 +18,7 @@
             <th>Item</th>
             <th>Qty</th>
             <th>Cheapest match</th>
+            <th>Added / checked by</th>
             <th></th>
         </tr>
     </thead>
@@ -41,6 +42,9 @@
                     <span style="color:#999">no match</span>
                 {% endif %}
             </td>
+            <td style="color:#999">
+                {{ item.added_by or "?" }}{% if item.checked %} / {{ item.checked_by or "?" }}{% endif %}
+            </td>
             <td>
                 <form method="post" action="/list/remove" style="display:inline">
                     <input type="hidden" name="id" value="{{ item.id }}">
@@ -49,7 +53,7 @@
             </td>
         </tr>
         {% else %}
-        <tr><td colspan="5">Nothing on the list yet.</td></tr>
+        <tr><td colspan="6">Nothing on the list yet.</td></tr>
         {% endfor %}
     </tbody>
 </table>

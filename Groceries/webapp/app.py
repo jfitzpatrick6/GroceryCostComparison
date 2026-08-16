@@ -4,7 +4,7 @@ import re
 
 import psycopg2
 import psycopg2.extras
-from flask import Flask, abort, redirect, render_template, request, url_for
+from flask import Flask, abort, redirect, render_template, request, session, url_for
 
 DB_HOST = os.getenv("DB_HOST", "db")
 DB_NAME = os.getenv("DB_NAME", "grocery_db")
@@ -19,6 +19,10 @@ SORT_COLUMNS = {
 }
 
 app = Flask(__name__)
+# Session cookie signing key - not a real access boundary (Tailscale is,
+# per #35), just needs to exist for Flask's session cookie to work. Only
+# matters if this ever gets exposed beyond the tailnet.
+app.secret_key = os.getenv("SECRET_KEY", "grocery-cost-comparison-dev-key")
 
 
 def get_connection():
@@ -32,6 +36,86 @@ def price_data_available(cur):
     500 on a fresh deployment with no scrape history."""
     cur.execute("SELECT to_regclass('grocery_prices_latest') IS NOT NULL AS table_exists")
     return cur.fetchone()["table_exists"]
+
+
+def ensure_profiles_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS profiles (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE
+        );
+    """)
+
+
+def active_profile():
+    """Whoever's picked via the profile switcher, or None if nobody has.
+    No password (see #35) - Tailscale is the actual access control."""
+    return session.get("profile_name")
+
+
+@app.context_processor
+def inject_profile_switcher():
+    """Makes the active profile + full profile list available in every
+    template's nav, without every single route having to fetch and pass
+    it through explicitly."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_profiles_table(cur)
+            conn.commit()
+            cur.execute("SELECT name FROM profiles ORDER BY name")
+            names = [row["name"] for row in cur.fetchall()]
+    finally:
+        conn.close()
+    return {"active_profile_name": active_profile(), "all_profile_names": names}
+
+
+@app.route("/profiles")
+def profiles():
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_profiles_table(cur)
+            conn.commit()
+            cur.execute("SELECT id, name FROM profiles ORDER BY name")
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return render_template("profiles.html", rows=rows, active=active_profile())
+
+
+@app.route("/profiles/add", methods=["POST"])
+def add_profile():
+    name = request.form.get("name", "").strip()
+    if name:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                ensure_profiles_table(cur)
+                cur.execute("INSERT INTO profiles (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (name,))
+            conn.commit()
+        finally:
+            conn.close()
+    return redirect(url_for("profiles"))
+
+
+@app.route("/profiles/remove", methods=["POST"])
+def remove_profile():
+    profile_id = request.form["id"]
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("profiles"))
+
+
+@app.route("/profiles/switch", methods=["POST"])
+def switch_profile():
+    session["profile_name"] = request.form.get("name") or None
+    return redirect(request.referrer or url_for("profiles"))
 
 
 def ensure_staples_table(cur):
@@ -156,6 +240,8 @@ def ensure_list_table(cur):
             checked_at TIMESTAMP
         );
     """)
+    cur.execute("ALTER TABLE grocery_list_items ADD COLUMN IF NOT EXISTS added_by TEXT;")
+    cur.execute("ALTER TABLE grocery_list_items ADD COLUMN IF NOT EXISTS checked_by TEXT;")
 
 
 @app.route("/list")
@@ -165,7 +251,7 @@ def grocery_list():
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             ensure_list_table(cur)
             conn.commit()
-            cur.execute("SELECT id, name, qty, checked FROM grocery_list_items ORDER BY checked, added_at")
+            cur.execute("SELECT id, name, qty, checked, added_by, checked_by FROM grocery_list_items ORDER BY checked, added_at")
             items = cur.fetchall()
 
             # Naive exact-name match against the latest scrape - not #25's
@@ -202,7 +288,10 @@ def add_list_item():
         try:
             with conn.cursor() as cur:
                 ensure_list_table(cur)
-                cur.execute("INSERT INTO grocery_list_items (name, qty) VALUES (%s, %s)", (name, qty or None))
+                cur.execute(
+                    "INSERT INTO grocery_list_items (name, qty, added_by) VALUES (%s, %s, %s)",
+                    (name, qty or None, active_profile()),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -217,8 +306,9 @@ def check_list_item():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE grocery_list_items SET checked = %s, checked_at = CASE WHEN %s THEN now() ELSE NULL END WHERE id = %s",
-                (checked, checked, item_id),
+                "UPDATE grocery_list_items SET checked = %s, checked_at = CASE WHEN %s THEN now() ELSE NULL END, "
+                "checked_by = CASE WHEN %s THEN %s ELSE checked_by END WHERE id = %s",
+                (checked, checked, checked, active_profile(), item_id),
             )
             # Restock pantry when checking off (buying), not when un-checking
             # (see #30) - undo doesn't reverse the restock, matching that
@@ -229,7 +319,7 @@ def check_list_item():
                 cur.execute("SELECT name, qty FROM grocery_list_items WHERE id = %s", (item_id,))
                 item = cur.fetchone()
                 if item:
-                    restock_pantry(cur, item[0], item[1])
+                    restock_pantry(cur, item[0], item[1], updated_by=active_profile())
         conn.commit()
     finally:
         conn.close()
@@ -259,12 +349,13 @@ def ensure_pantry_table(cur):
             updated_at TIMESTAMP DEFAULT now()
         );
     """)
+    cur.execute("ALTER TABLE pantry_items ADD COLUMN IF NOT EXISTS updated_by TEXT;")
 
 
 _QTY_LINE = re.compile(r"^\s*([\d.]+)\s*(\S*)\s*$")
 
 
-def restock_pantry(cur, name, qty_text):
+def restock_pantry(cur, name, qty_text, updated_by=None):
     """Adds a checked-off shopping-list item's quantity to pantry (#30).
     Only handles a clean "<number> <unit>" qty - anything else (blank, a
     merged "X + Y" string, free text) is skipped rather than guessed at;
@@ -282,13 +373,13 @@ def restock_pantry(cur, name, qty_text):
     existing = cur.fetchone()
     if existing and existing[2] == unit:
         cur.execute(
-            "UPDATE pantry_items SET amount = %s, updated_at = now() WHERE id = %s",
-            (float(existing[1] or 0) + amount, existing[0]),
+            "UPDATE pantry_items SET amount = %s, updated_at = now(), updated_by = %s WHERE id = %s",
+            (float(existing[1] or 0) + amount, updated_by, existing[0]),
         )
     elif not existing:
         cur.execute(
-            "INSERT INTO pantry_items (name, amount, unit) VALUES (%s, %s, %s)",
-            (name, amount, unit),
+            "INSERT INTO pantry_items (name, amount, unit, updated_by) VALUES (%s, %s, %s, %s)",
+            (name, amount, unit, updated_by),
         )
     # else: existing pantry row has a different unit - don't guess how to
     # combine them, leave it for a manual correction.
@@ -301,7 +392,7 @@ def pantry():
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             ensure_pantry_table(cur)
             conn.commit()
-            cur.execute("SELECT id, name, amount, unit FROM pantry_items ORDER BY name")
+            cur.execute("SELECT id, name, amount, unit, updated_by FROM pantry_items ORDER BY name")
             items = cur.fetchall()
     finally:
         conn.close()
@@ -322,13 +413,13 @@ def set_pantry_item():
                 existing = cur.fetchone()
                 if existing:
                     cur.execute(
-                        "UPDATE pantry_items SET amount = %s, unit = %s, updated_at = now() WHERE id = %s",
-                        (amount, unit, existing[0]),
+                        "UPDATE pantry_items SET amount = %s, unit = %s, updated_at = now(), updated_by = %s WHERE id = %s",
+                        (amount, unit, active_profile(), existing[0]),
                     )
                 else:
                     cur.execute(
-                        "INSERT INTO pantry_items (name, amount, unit) VALUES (%s, %s, %s)",
-                        (name, amount, unit),
+                        "INSERT INTO pantry_items (name, amount, unit, updated_by) VALUES (%s, %s, %s, %s)",
+                        (name, amount, unit, active_profile()),
                     )
             conn.commit()
         finally:
@@ -626,6 +717,7 @@ def ensure_planner_table(cur):
     # pantry, so this can't just be inferred from the slot existing.
     cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS cooked BOOLEAN NOT NULL DEFAULT FALSE;")
     cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS cooked_at TIMESTAMP;")
+    cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS cooked_by TEXT;")
 
 
 def week_start_for(d):
@@ -648,7 +740,7 @@ def planner():
             ensure_recipes_tables(cur)
             conn.commit()
             cur.execute("""
-                SELECT s.day_of_week, r.id AS recipe_id, r.name AS recipe_name, s.cooked
+                SELECT s.day_of_week, r.id AS recipe_id, r.name AS recipe_name, s.cooked, s.cooked_by
                 FROM meal_plan_slots s
                 JOIN recipes r ON r.id = s.recipe_id
                 WHERE s.week_start = %s AND s.meal = 'dinner'
@@ -718,7 +810,10 @@ def deplete_pantry_for_recipe(cur, recipe_id):
         if not row or row["amount"] is None or row["unit"] != ing["unit"]:
             continue
         remaining = max(0.0, float(row["amount"]) - used)
-        cur.execute("UPDATE pantry_items SET amount = %s, updated_at = now() WHERE id = %s", (remaining, row["id"]))
+        cur.execute(
+            "UPDATE pantry_items SET amount = %s, updated_at = now(), updated_by = %s WHERE id = %s",
+            (remaining, active_profile(), row["id"]),
+        )
 
 
 @app.route("/planner/cook", methods=["POST"])
@@ -739,8 +834,9 @@ def mark_cooked():
             slot = cur.fetchone()
             if slot:
                 cur.execute(
-                    "UPDATE meal_plan_slots SET cooked = %s, cooked_at = CASE WHEN %s THEN now() ELSE NULL END WHERE id = %s",
-                    (cooked, cooked, slot["id"]),
+                    "UPDATE meal_plan_slots SET cooked = %s, cooked_at = CASE WHEN %s THEN now() ELSE NULL END, "
+                    "cooked_by = CASE WHEN %s THEN %s ELSE cooked_by END WHERE id = %s",
+                    (cooked, cooked, cooked, active_profile(), slot["id"]),
                 )
                 # Deplete on marking cooked, not on un-marking (matches the
                 # restock-only-on-check, not-on-uncheck asymmetry in #30 -

@@ -23,6 +23,18 @@
         <a href="/planner">Planner</a>
         <a href="/pantry">Pantry</a>
         <a href="/history">History</a>
+        <a href="/profiles">Profiles</a>
+        <span style="float:right">
+            <form method="post" action="/profiles/switch" style="display:inline">
+                <select name="name" onchange="this.form.submit()">
+                    <option value="">-- who are you? --</option>
+                    {% for n in all_profile_names %}
+                    <option value="{{ n }}" {% if n == active_profile_name %}selected{% endif %}>{{ n }}</option>
+                    {% endfor %}
+                </select>
+                <noscript><button type="submit">Switch</button></noscript>
+            </form>
+        </span>
     </nav>
     <hr>
     {% block content %}{% endblock %}
