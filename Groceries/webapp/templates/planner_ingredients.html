@@ -6,7 +6,17 @@
 
 <ul>
     {% for item in combined %}
-    <li>{% if item.amount %}{{ item.amount }} {% endif %}{% if item.unit %}{{ item.unit }} {% endif %}{{ item.name }}</li>
+    <li>
+        {% if item.amount %}{{ item.amount }} {% endif %}{% if item.unit %}{{ item.unit }} {% endif %}{{ item.name }}
+        {% if item.pantry_have is not none %}
+            - have {{ item.pantry_have }} {{ item.unit }} in pantry
+            {% if item.need_amount == "0" %}
+                <strong>(fully covered, won't be added to the list)</strong>
+            {% else %}
+                <strong>(need {{ item.need_amount }} {{ item.unit }} more)</strong>
+            {% endif %}
+        {% endif %}
+    </li>
     {% else %}
     <li>No dinners planned this week.</li>
     {% endfor %}

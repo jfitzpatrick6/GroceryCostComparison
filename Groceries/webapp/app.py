@@ -220,6 +220,16 @@ def check_list_item():
                 "UPDATE grocery_list_items SET checked = %s, checked_at = CASE WHEN %s THEN now() ELSE NULL END WHERE id = %s",
                 (checked, checked, item_id),
             )
+            # Restock pantry when checking off (buying), not when un-checking
+            # (see #30) - undo doesn't reverse the restock, matching that
+            # manual pantry corrections are always available rather than
+            # trying to make this perfectly symmetric.
+            if checked:
+                ensure_pantry_table(cur)
+                cur.execute("SELECT name, qty FROM grocery_list_items WHERE id = %s", (item_id,))
+                item = cur.fetchone()
+                if item:
+                    restock_pantry(cur, item[0], item[1])
         conn.commit()
     finally:
         conn.close()
@@ -237,6 +247,106 @@ def remove_list_item():
     finally:
         conn.close()
     return redirect(url_for("grocery_list"))
+
+
+def ensure_pantry_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pantry_items (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            amount NUMERIC,
+            unit TEXT,
+            updated_at TIMESTAMP DEFAULT now()
+        );
+    """)
+
+
+_QTY_LINE = re.compile(r"^\s*([\d.]+)\s*(\S*)\s*$")
+
+
+def restock_pantry(cur, name, qty_text):
+    """Adds a checked-off shopping-list item's quantity to pantry (#30).
+    Only handles a clean "<number> <unit>" qty - anything else (blank, a
+    merged "X + Y" string, free text) is skipped rather than guessed at;
+    the item just doesn't auto-restock and can be corrected by hand."""
+    if not qty_text:
+        return
+    match = _QTY_LINE.match(qty_text)
+    if not match or not match.group(1):
+        return
+    amount, unit = match.groups()
+    amount = float(amount)
+    unit = unit or None
+
+    cur.execute("SELECT id, amount, unit FROM pantry_items WHERE lower(name) = lower(%s)", (name,))
+    existing = cur.fetchone()
+    if existing and existing[2] == unit:
+        cur.execute(
+            "UPDATE pantry_items SET amount = %s, updated_at = now() WHERE id = %s",
+            (float(existing[1] or 0) + amount, existing[0]),
+        )
+    elif not existing:
+        cur.execute(
+            "INSERT INTO pantry_items (name, amount, unit) VALUES (%s, %s, %s)",
+            (name, amount, unit),
+        )
+    # else: existing pantry row has a different unit - don't guess how to
+    # combine them, leave it for a manual correction.
+
+
+@app.route("/pantry")
+def pantry():
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_pantry_table(cur)
+            conn.commit()
+            cur.execute("SELECT id, name, amount, unit FROM pantry_items ORDER BY name")
+            items = cur.fetchall()
+    finally:
+        conn.close()
+    return render_template("pantry.html", items=items)
+
+
+@app.route("/pantry/set", methods=["POST"])
+def set_pantry_item():
+    name = request.form.get("name", "").strip()
+    amount = request.form.get("amount") or None
+    unit = request.form.get("unit", "").strip() or None
+    if name:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                ensure_pantry_table(cur)
+                cur.execute("SELECT id FROM pantry_items WHERE lower(name) = lower(%s)", (name,))
+                existing = cur.fetchone()
+                if existing:
+                    cur.execute(
+                        "UPDATE pantry_items SET amount = %s, unit = %s, updated_at = now() WHERE id = %s",
+                        (amount, unit, existing[0]),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO pantry_items (name, amount, unit) VALUES (%s, %s, %s)",
+                        (name, amount, unit),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+    return redirect(url_for("pantry"))
+
+
+@app.route("/pantry/remove", methods=["POST"])
+def remove_pantry_item():
+    item_id = request.form["id"]
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pantry_items WHERE id = %s", (item_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("pantry"))
 
 
 @app.route("/list/where-to-buy")
@@ -624,6 +734,32 @@ def get_week_ingredients(cur, week_start):
     return combined
 
 
+def apply_pantry(cur, combined):
+    """Annotates each combined ingredient with pantry coverage (#30) - skip
+    or reduce items the pantry already has enough of, always showing what
+    was skipped/reduced rather than silently dropping it. Only compares
+    when both the need and the pantry have a clean numeric amount and the
+    exact same unit; anything else is left as a full need - conservative
+    on purpose, never guesses its way into subtracting the wrong thing."""
+    ensure_pantry_table(cur)
+    for ing in combined:
+        ing["pantry_have"] = None
+        ing["need_amount"] = ing["amount"]
+        try:
+            needed = float(ing["amount"])
+        except (TypeError, ValueError):
+            continue
+        cur.execute("SELECT amount, unit FROM pantry_items WHERE lower(name) = lower(%s)", (ing["name"],))
+        row = cur.fetchone()
+        if not row or row["amount"] is None or row["unit"] != ing["unit"]:
+            continue
+        have = float(row["amount"])
+        ing["pantry_have"] = have
+        remaining = max(0.0, needed - have)
+        ing["need_amount"] = str(remaining).rstrip("0").rstrip(".") if "." in str(remaining) else str(remaining)
+    return combined
+
+
 @app.route("/planner/ingredients")
 def planner_ingredients():
     week_start = request.args.get("week") or week_start_for(datetime.date.today())
@@ -633,6 +769,7 @@ def planner_ingredients():
             ensure_planner_table(cur)
             conn.commit()
             combined = get_week_ingredients(cur, week_start)
+            apply_pantry(cur, combined)
     finally:
         conn.close()
     return render_template("planner_ingredients.html", week_start=week_start, combined=combined)
@@ -674,18 +811,24 @@ def add_week_to_list():
             ensure_list_table(cur)
             conn.commit()
             combined = get_week_ingredients(cur, week_start)
+            apply_pantry(cur, combined)
 
             for ing in combined:
+                # Fully covered by pantry (#30) - don't add it to the list.
+                if ing["pantry_have"] is not None and ing["need_amount"] == "0":
+                    continue
+                amount, unit = ing["need_amount"], ing["unit"]
+
                 cur.execute(
                     "SELECT id, qty FROM grocery_list_items WHERE lower(name) = lower(%s) AND checked = FALSE LIMIT 1",
                     (ing["name"],),
                 )
                 existing = cur.fetchone()
                 if existing:
-                    merged_qty = merge_qty(existing["qty"], ing["amount"], ing["unit"])
+                    merged_qty = merge_qty(existing["qty"], amount, unit)
                     cur.execute("UPDATE grocery_list_items SET qty = %s WHERE id = %s", (merged_qty, existing["id"]))
                 else:
-                    qty = f"{ing['amount']} {ing['unit']}".strip() if ing["amount"] else (ing["unit"] or None)
+                    qty = f"{amount} {unit}".strip() if amount else (unit or None)
                     cur.execute("INSERT INTO grocery_list_items (name, qty) VALUES (%s, %s)", (ing["name"], qty))
         conn.commit()
     finally:

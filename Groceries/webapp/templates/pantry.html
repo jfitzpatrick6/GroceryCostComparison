@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Pantry - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<h1>Pantry</h1>
+<p>What's already in the house. Add/update to set the current amount (not add to it) - checking off a shopping-list item restocks automatically.</p>
+
+<form method="post" action="/pantry/set">
+    <input type="text" name="name" placeholder="Item (e.g. chicken breast)" required>
+    <input type="text" name="amount" placeholder="Amount (e.g. 2)">
+    <input type="text" name="unit" placeholder="Unit (e.g. lb)">
+    <button type="submit">Add / Update</button>
+</form>
+
+<table>
+    <thead>
+        <tr><th>Item</th><th>Amount</th><th>Unit</th><th></th></tr>
+    </thead>
+    <tbody>
+        {% for item in items %}
+        <tr>
+            <td>{{ item.name }}</td>
+            <td>{{ item.amount if item.amount is not none else "" }}</td>
+            <td>{{ item.unit or "" }}</td>
+            <td>
+                <form method="post" action="/pantry/remove" style="display:inline">
+                    <input type="hidden" name="id" value="{{ item.id }}">
+                    <button type="submit">Remove</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">Pantry is empty.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
