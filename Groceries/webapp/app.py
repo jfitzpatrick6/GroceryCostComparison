@@ -8,6 +8,8 @@ import psycopg2.extras
 import requests
 from flask import Flask, abort, redirect, render_template, request, session, url_for
 
+import matching
+
 DB_HOST = os.getenv("DB_HOST", "db")
 DB_NAME = os.getenv("DB_NAME", "grocery_db")
 DB_USER = os.getenv("DB_USER", "user")
@@ -257,28 +259,24 @@ def grocery_list():
             cur.execute("SELECT id, name, qty, checked, added_by, checked_by FROM grocery_list_items ORDER BY checked, added_at")
             items = cur.fetchall()
 
-            # Naive exact-name match against the latest scrape - not #25's
-            # real cross-store matching (not built yet), just enough to show
-            # "cheapest store" when a list item happens to match a product
-            # name verbatim. Unmatched items still show, just without this.
-            # grocery_prices_latest only exists once a scrape has actually
-            # run - skip matching entirely rather than 500ing on a fresh
-            # deployment with no scrape history yet.
+            # Real cross-store matching (#25) - normalizes both the list
+            # item name and every catalog product into significant tokens
+            # and matches on token-subset containment (see matching.py),
+            # not exact-string or bare substring. Reduced to the single
+            # best identity match per store before picking cheapest, so a
+            # loosely-related but technically-matching product (e.g. a
+            # candy bar for a "milk" query) can't win on price alone.
+            # Unmatched items still show, just without a match - never
+            # dropped from the list. grocery_prices_latest only exists once
+            # a scrape has actually run - skip matching entirely rather
+            # than 500ing on a fresh deployment with no scrape history yet.
             if price_data_available(cur):
+                catalog = matching.load_catalog(cur)
                 for item in items:
-                    # ILIKE with no wildcards is an exact (case-insensitive)
-                    # match, not a substring one - "chicken breast" would
-                    # never match "Wellsley Farms Boneless Skinless Chicken
-                    # Breasts, 4.5-6.5 lbs." without this (see #25). Matches
-                    # the %...% pattern /prices' own search already uses.
-                    cur.execute("""
-                        SELECT store, price, unit_price, unit
-                        FROM grocery_prices_latest
-                        WHERE product ILIKE %s
-                        ORDER BY unit_price ASC NULLS LAST
-                        LIMIT 1
-                    """, (f"%{item['name']}%",))
-                    item["match"] = cur.fetchone()
+                    per_store = matching.best_per_store(matching.match_item(catalog, item["name"]))
+                    item["match"] = min(
+                        per_store.values(), key=lambda m: (m["unit_price"] is None, m["unit_price"] or 0)
+                    ) if per_store else None
             else:
                 for item in items:
                     item["match"] = None
@@ -543,9 +541,11 @@ def _annotate_package_fit(match, needed_qty, needed_unit):
 def where_to_buy():
     """The payoff feature (#31): for each unchecked list item, the cheapest
     store; plus a "shop one store" vs "split across stores" total
-    comparison. v1 - no store-count minimization, and matching is the same
-    naive ILIKE stand-in used elsewhere (#25's real cross-store matching
-    isn't built yet)."""
+    comparison. v1 - no store-count minimization. Matching is #25's real
+    cross-store matching (see matching.py): token-normalized, not a bare
+    substring search, and reduced to one best identity match per store
+    before any price comparison happens - see the comment in
+    matching.best_per_store for why that ordering matters."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -559,33 +559,21 @@ def where_to_buy():
             all_stores = set()
 
             if price_data_available(cur):
+                catalog = matching.load_catalog(cur)
                 for item in items:
-                    # See the identical fix + comment in grocery_list() -
-                    # ILIKE with no wildcards was an exact-match bug (#25).
-                    cur.execute("""
-                        SELECT store, price, size, unit_price, unit
-                        FROM grocery_prices_latest
-                        WHERE product ILIKE %s
-                    """, (f"%{item['name']}%",))
-                    matches = cur.fetchall()
-                    if not matches:
+                    # One product per store (the best identity match, not
+                    # just "cheapest thing that loosely matched") - see
+                    # matching.best_per_store. Anything left unmatched here
+                    # shows up under "No price match found for" rather than
+                    # disappearing (#25's "done" bar).
+                    by_store = matching.best_per_store(matching.match_item(catalog, item["name"]))
+                    if not by_store:
                         unmatched.append(item)
                         continue
 
                     needed_qty, needed_unit = _parse_needed_qty(item["qty"])
-                    for m in matches:
+                    for m in by_store.values():
                         _annotate_package_fit(m, needed_qty, needed_unit)
-
-                    # Cheapest *per store* by total cost to actually cover
-                    # the needed quantity (#38), not by raw $/unit - a
-                    # naive dict comprehension here previously kept
-                    # whichever match sorted last globally for a store, not
-                    # that store's actual cheapest option.
-                    by_store = {}
-                    for m in matches:
-                        current = by_store.get(m["store"])
-                        if current is None or m["total_cost"] < current["total_cost"]:
-                            by_store[m["store"]] = m
 
                     cheapest = min(by_store.values(), key=lambda m: m["total_cost"])
                     per_item.append({"item": item, "cheapest": cheapest, "by_store": by_store})
