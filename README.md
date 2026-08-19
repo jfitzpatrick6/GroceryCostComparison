@@ -1,6 +1,6 @@
 # GroceryCostComparison
 
-Scrapes grocery prices from a handful of stores into Postgres so they can be compared. Currently just the data layer - the eventual goal is a small self-hosted webapp (recipes, weekly meal planning, "where should I buy this") built on top of this data. See the [GitHub issues](https://github.com/jfitzpatrick6/GroceryCostComparison/issues) for the full roadmap; issues are the source of truth for what's done/in progress/planned, not this file.
+Scrapes grocery prices from a handful of stores into Postgres, and a small self-hosted webapp on top: recipes, weekly meal planning (breakfast/lunch/dinner), a pantry that tracks itself, a persistent grocery list, and "where should I buy this" cost comparison. See the [GitHub issues](https://github.com/jfitzpatrick6/GroceryCostComparison/issues) for the full roadmap; issues are the source of truth for what's done/in progress/planned, not this file.
 
 ## Current status per store
 
@@ -29,11 +29,13 @@ ALDIS_STORE=
 BJS_STORE=1234
 WALMARTSTORE=1234
 TS_AUTHKEY=
+USDA_API_KEY=
 ```
 
 - `TOPS_STORE` / `ALDIS_STORE` can be left blank for now - they're not used yet (see the table above and #43).
 - `BJS_STORE` / `WALMARTSTORE` need real store ids for those chains. BJs' id shows up in that chain's own site network requests; Walmart's scraper doesn't currently work regardless of what's set here (see above).
 - `TS_AUTHKEY` is for the webapp's Tailscale sidecar (see below) - generate one at https://login.tailscale.com/admin/settings/keys. Can be left blank if you're not running the webapp yet.
+- `USDA_API_KEY` is for the webapp's recipe-ingredient unit conversion ("2 cups flour" -> a purchase-unit estimate) - get a free key at https://fdc.nal.usda.gov/api-key-signup. Optional; that one feature just won't produce estimates without it.
 
 **Do not commit a filled-in `.env`.** Store ids are location-identifying, and an exposed `TS_AUTHKEY` could let someone else join your tailnet. `.env` is already gitignored - keep it that way.
 
@@ -63,7 +65,21 @@ cd Groceries
 docker compose up --build db tailscale webapp
 ```
 
-This is a small Flask app (`Groceries/webapp/`) with one real page so far: `/prices`, a searchable table of the latest scraped price per product/store. More pages land as the corresponding GitHub issues get done.
+This is a small Flask app (`Groceries/webapp/`):
+
+| Page | What it does |
+|---|---|
+| `/prices` | Searchable table of the latest scraped price per product/store |
+| `/staples` | Pin products you buy regularly, compare their price across stores at a glance |
+| `/recipes` | Save recipes with free-text ingredient lines ("2 cups flour") - paste a whole recipe (title/ingredients/instructions all together) to pre-fill the form instead of typing it in by hand |
+| `/planner` | Weekly grid, tabbed by meal (breakfast/lunch/dinner). A day's meal can hold several recipes (e.g. a burger patty recipe + a bun recipe) plus loose ad-hoc ingredients that don't need a whole recipe of their own (e.g. taco night's shredded cheese). Serving counts are adjustable per night without touching the recipe itself. "Ingredients needed this week" merges the whole week into one list, with a best-effort purchase-unit estimate (USDA-backed) alongside each cooking-unit amount |
+| `/pantry` | What's on hand - manual add/update, auto-restocks when you check off a grocery-list purchase, auto-depletes when a planned meal is marked cooked (with an editable "Used tonight" correction, since real cooking never matches a recipe exactly). An optional low-stock threshold per item surfaces a "running low" suggestion on the grocery list |
+| `/list` | Persistent grocery list - add ad-hoc or merge a planned week's ingredients in one action, check items off as you shop |
+| `/list/where-to-buy` | The payoff feature: cheapest store per list item (accounting for needing to buy whole packages, not just the lowest $/unit), plus a one-store-vs-split-across-stores total comparison |
+| `/history` | What's actually been cooked, with a one-click "make this again" |
+| `/profiles` | Lightweight named household profiles (no password) - attributes who added/checked/cooked what |
+
+More pages/features land as the corresponding GitHub issues get done.
 
 It's meant to be reachable only over [Tailscale](https://tailscale.com/), not the public internet or LAN - the `tailscale` service is a sidecar container the webapp shares its network namespace with, so it shows up on your tailnet once `TS_AUTHKEY` is set and it authenticates. **This part is configured but not verified end-to-end** - it was built and tested without a real Tailscale account available, so confirm the container actually appears in your tailnet (`https://login.tailscale.com/admin/machines`) rather than assuming it works. Without a valid `TS_AUTHKEY`, the sidecar will sit in an auth-retry loop and periodically restart, which breaks the webapp's networking each time (`docker compose restart webapp` recovers it, but a real auth key is the actual fix).
 
