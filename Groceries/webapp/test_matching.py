@@ -101,6 +101,69 @@ class ScoreMatchTests(unittest.TestCase):
             matching.normalize_tokens("peanut butter"), matching.normalize_tokens("Jif Creamy Peanut Butter"),
         ))
 
+    def test_disqualifying_modifier_blocks_butter_pecan_ice_cream(self):
+        # Regression for #56: a bare "butter" query normalized to
+        # {butter}, a token-subset of "Butter Pecan Ice Cream" ->
+        # {butter, pecan, ice, cream} (score 0.25, above MIN_SCORE), with
+        # "pecan" missing from DISQUALIFYING_MODIFIERS["butter"] - nothing
+        # blocked ice cream from showing as a "butter" match.
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("butter"), matching.normalize_tokens("Butter Pecan Ice Cream"),
+        ))
+
+    def test_disqualifying_modifier_blocks_butter_beans_and_lettuce(self):
+        # Found auditing #56: same failure as butter pecan ice cream for
+        # two other real product categories that happen to contain the
+        # word "butter" - both score 0.5 against a bare "butter" query.
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("butter"), matching.normalize_tokens("Butter Beans"),
+        ))
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("butter"), matching.normalize_tokens("Butter Lettuce"),
+        ))
+
+    def test_cookie_butter_and_butterscotch_already_correctly_blocked(self):
+        # Verified (not assumed, per #56) while auditing DISQUALIFYING_MODIFIERS:
+        # "cookie butter" is already blocked via the existing "cookie"
+        # entry, and "butterscotch" never even reaches the disqualifier
+        # check because it normalizes to a single token ("butterscotch"),
+        # which isn't equal to the query token "butter" and so never
+        # subset-matches in the first place. "Butter Scotch" written as two
+        # words is still caught by the existing "scotch" entry.
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("butter"), matching.normalize_tokens("Cookie Butter"),
+        ))
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("butter"), matching.normalize_tokens("Butterscotch Pudding"),
+        ))
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("butter"), matching.normalize_tokens("Butter Scotch Candy"),
+        ))
+
+    def test_disqualifying_modifier_blocks_coffee_ice_cream(self):
+        # Found auditing #56: the same "flavor word + ice cream" pattern as
+        # butter/pecan recurs for "coffee" - "Coffee Ice Cream" scores 0.33
+        # and "Vanilla Coffee Ice Cream Bar" scores exactly 0.2 (right at
+        # MIN_SCORE) against a bare "coffee" query.
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("coffee"), matching.normalize_tokens("Coffee Ice Cream"),
+        ))
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("coffee"), matching.normalize_tokens("Vanilla Coffee Ice Cream Bar"),
+        ))
+
+    def test_disqualifying_modifier_blocks_egg_nog(self):
+        # Found auditing #56: "Egg Nog" (written as two words) scores 0.5
+        # against a bare "egg" query - it's a drink, not the grocery item
+        # "eggs". "Eggnog" as one word was already safe (single token,
+        # never equals the query token "egg").
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("egg"), matching.normalize_tokens("Egg Nog"),
+        ))
+        self.assertIsNone(matching.score_match(
+            matching.normalize_tokens("egg"), matching.normalize_tokens("Eggnog"),
+        ))
+
 
 # Real rows pulled from this repo's own live scrape (see the module
 # docstring above) - deliberately messy brand/size/marketing text, the

@@ -249,15 +249,51 @@ MIN_SCORE = 0.2
 # hand-maintained patch for specific normalization misses, not a general
 # solution - grow this from real misses rather than guessing at more of
 # them upfront.
+#
+# #56 judgment call: is hand-patching this blocklist as misses turn up
+# (still the approach here after this pass) good enough, or does it need a
+# cheap structural fix instead (e.g. requiring the query and product to
+# share a *category-defining* second token for single-word queries)? Kept
+# it hand-patched. A category-based fix isn't actually cheaper - it just
+# relocates the hand-maintained list from "tokens that disqualify X" to
+# "which category X belongs to" plus a token->category map for every
+# product token that could show up, which is strictly more bookkeeping for
+# the same coverage, and still needs a per-term list (this one) for terms
+# that don't cleanly own one category (e.g. "coffee" the drink vs "coffee"
+# the flavor - both legitimately produce "coffee X" names). A miss here
+# degrades to a wrong-but-visible price row, not a crash, so the cost of
+# staying reactive is low and matches how MANUAL_ALIASES already treats the
+# same kind of miss.
 DISQUALIFYING_MODIFIERS = {
     "butter": {
         "peanut", "almond", "cashew", "sunflower", "cocoa", "shea", "apple",
         "cookie", "cookies", "cracker", "crackers", "popcorn", "spray",
         "twist", "twists", "curry", "squash", "syrup", "seasoning", "scotch",
         "corn", "puffed", "crouton",
+        # Found auditing #56 (real, confirmed against normalize_tokens, not
+        # guessed): "pecan" - "Butter Pecan Ice Cream" is a token-subset of
+        # a bare "butter" query (score 0.25, above MIN_SCORE) with nothing
+        # to block it - the reported bug. "bean"/"beans" and "lettuce" are
+        # the same failure for two other real product categories ("Butter
+        # Beans" and "Butter Lettuce" both score 0.5 against "butter" alone
+        # with no disqualifier).
+        "pecan", "bean", "beans", "lettuce",
     },
-    "coffee": {"creamer", "filter", "cake", "mate", "flavored", "liqueur"},
-    "egg": {"noodle", "noodles", "roll", "rolls", "kinder", "joy", "chocolate"},
+    "coffee": {
+        "creamer", "filter", "cake", "mate", "flavored", "liqueur",
+        # Found auditing #56: the same "flavor word + ice cream" pattern as
+        # butter/pecan - "Coffee Ice Cream" scores 0.33 and "Vanilla Coffee
+        # Ice Cream Bar" scores exactly 0.2 (right at MIN_SCORE) against a
+        # bare "coffee" query, both confirmed via score_match directly.
+        "ice", "cream",
+    },
+    "egg": {
+        "noodle", "noodles", "roll", "rolls", "kinder", "joy", "chocolate",
+        # Found auditing #56: "Egg Nog" (written as two words, as opposed to
+        # "Eggnog" which is already a single token and safe) scores 0.5
+        # against a bare "egg" query - a drink, not the grocery item "eggs".
+        "nog",
+    },
 }
 
 
