@@ -3,8 +3,9 @@ Shared unit/rate conversion helper, used by every scraper. Previously
 copy-pasted with slight drift into tops.py, aldis.py, and BJs.py - this is
 the union of what those three actually needed (aldis.py's copy was the
 most capable: more recognized units, metric fallback), consolidated once.
-Walmart.py's rate handling is a genuinely different mechanism (parses a
-"¢/oz"-style string Walmart's own site returns) and isn't part of this.
+Walmart.py used to have its own separate mechanism (parsing a "¢/oz"-style
+string Walmart's own site returns) but was switched over to this module
+too (see #12) - all four scrapers now go through calculate_rate_per_unit.
 """
 
 import re
