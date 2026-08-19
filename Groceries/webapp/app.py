@@ -1458,6 +1458,41 @@ _USDA_VOLUME_TO_GAL = {"ml": 0.000264172, "l": 0.264172}
 _USDA_MEASURE_WORDS = {"cup": ["cup"], "tbsp": ["tbsp", "tablespoon"], "tsp": ["tsp", "teaspoon"]}
 _GRAMS_PER_LB = 453.592
 
+# --- #54: known-ambiguous single-word ingredient names. FDC's own search
+# relevance can rank a same-word-different-food result first for these -
+# confirmed against the real FDC API while building this fix:
+#   "pepper" -> "Pepper, banana, raw" (169394) before the spice
+#               "Spices, pepper, black" (170931)
+#   "butter" -> "Butter, Clarified butter (ghee)" (171314) before plain
+#               "Butter, salted" (173410)
+#   "flour"  -> "Arrowroot flour" (170684) before any wheat flour
+#   "sugar"  -> "Sugar, turbinado" (170674) before granulated white sugar
+# The fix biases the *search query text* toward a more specific phrase
+# rather than hand-picking an fdcId directly - it still goes through the
+# same whole-word/starts-with filtering below, and stays correct even if
+# FDC renumbers or re-ranks its own data (a hardcoded fdcId wouldn't).
+# Deliberately small and hand-maintained, same spirit as MANUAL_ALIASES /
+# DISQUALIFYING_MODIFIERS in matching.py - grow it from real misses, not
+# speculative ones. "onion" was checked too (see test_usda_matching.py)
+# but turned out NOT to need an entry here - the whole-word-boundary and
+# starts-with fixes below already resolve it correctly on their own once
+# plural descriptions ("Onions, raw") are no longer rejected outright.
+_USDA_SEARCH_ALIASES = {
+    "pepper": "pepper black",
+    "black pepper": "pepper black",
+    "ground pepper": "pepper black",
+    "ground black pepper": "pepper black",
+    "cracked pepper": "pepper black",
+    "cracked black pepper": "pepper black",
+    "butter": "butter salted",
+    "flour": "wheat flour all-purpose",
+    "all purpose flour": "wheat flour all-purpose",
+    "all-purpose flour": "wheat flour all-purpose",
+    "sugar": "sugar granulated",
+    "white sugar": "sugar granulated",
+    "granulated sugar": "sugar granulated",
+}
+
 
 def ensure_ingredient_conversions_table(cur):
     """Local cache of resolved cooking-unit -> grams-per-unit lookups (#36)
@@ -1487,39 +1522,81 @@ def _usda_grams_per_unit(name, measure_words):
     if not api_key:
         return None
     try:
+        # #54: search the alias's biased phrase for known-ambiguous names
+        # (see _USDA_SEARCH_ALIASES above), the raw name otherwise.
+        search_name = _USDA_SEARCH_ALIASES.get((name or "").strip().lower(), name)
         search = requests.get(
             "https://api.nal.usda.gov/fdc/v1/foods/search",
-            params={"query": name, "pageSize": 5, "dataType": "SR Legacy,Foundation", "api_key": api_key},
+            params={"query": search_name, "pageSize": 10, "dataType": "SR Legacy,Foundation", "api_key": api_key},
             timeout=5,
         )
         search.raise_for_status()
         foods = search.json().get("foods", [])
+        query_words = [w for w in re.findall(r"[a-z]+", search_name.lower()) if len(w) >= 3]
+        if not query_words:
+            return None
+
         # USDA's search is fuzzy relevance, not exact - "salt" can top-match
-        # "Butter, salted". Require a whole-word hit from the query in the
-        # result's description before trusting its data at all; a plain
-        # substring check isn't enough ("salt" is a substring of "salted").
-        # This can still reject good matches or accept a same-word-different-
-        # food match (e.g. two different "pepper"s) - it narrows the risk,
-        # doesn't eliminate it.
-        query_words = [w for w in re.findall(r"[a-z]+", name.lower()) if len(w) >= 3]
-        foods = [
-            f for f in foods
-            if any(re.search(rf"\b{re.escape(w)}\b", f.get("description", "").lower()) for w in query_words)
-        ]
+        # "Butter, salted". Require a whole-word hit for EVERY significant
+        # query word (not just any one of them, #54 - a query like "melted
+        # butter" used to accept "Butter, Clarified butter (ghee)" on the
+        # strength of "butter" alone, since FDC's raw-ingredient entries
+        # never actually say "melted"; requiring both words correctly
+        # rejects it instead of guessing) in the result's description before
+        # trusting its data at all. "s?" tolerates FDC's own plural
+        # phrasing ("Onions, raw") that a strict \bonion\b boundary would
+        # otherwise reject outright - confirmed against real data that this
+        # was silently letting "DENNY'S, onion rings" (the only *singular*
+        # "onion" hit) through as the sole candidate for a bare "onion"
+        # query. This can still accept a same-word-different-food match -
+        # it narrows the risk, doesn't eliminate it - see the starts-with
+        # preference below and _USDA_SEARCH_ALIASES for the rest of #54's
+        # fix.
+        def _word_hits(description):
+            desc = description.lower()
+            return all(re.search(rf"\b{re.escape(w)}s?\b", desc) for w in query_words)
+
+        foods = [f for f in foods if _word_hits(f.get("description", ""))]
         if not foods:
             return None
-        detail = requests.get(
-            f"https://api.nal.usda.gov/fdc/v1/food/{foods[0]['fdcId']}",
-            params={"api_key": api_key},
-            timeout=5,
-        )
-        detail.raise_for_status()
-        for portion in detail.json().get("foodPortions") or []:
-            modifier = (portion.get("modifier") or "").lower()
-            gram_weight = portion.get("gramWeight")
-            amount = portion.get("amount") or 1.0
-            if gram_weight and amount and any(w in modifier for w in measure_words):
-                return float(gram_weight) / float(amount)
+
+        # #54: prefer a description that *starts with* one of the query
+        # words over one where the word merely appears somewhere in it.
+        # FDC's own naming convention puts the generic/plain food first
+        # ("Onions, raw", "Butter, salted", "Flour, wheat, all-purpose...")
+        # and pushes a same-word-different-food match to a modifier
+        # position instead ("Spices, pepper, black", "Almond butter,
+        # creamy") - confirmed against real search results for every
+        # ingredient named in the issue. Sort is stable, so FDC's own
+        # relevance order (still a meaningful signal) is preserved within
+        # each of the two tiers.
+        def _starts_with_query_word(description):
+            desc = description.lower()
+            return any(re.match(rf"{re.escape(w)}s?\b", desc) for w in query_words)
+
+        foods.sort(key=lambda f: not _starts_with_query_word(f.get("description", "")))
+
+        # Try a few identity-confirmed candidates in order, not just the
+        # top one - a correct match can still lack portion data for the
+        # requested measure (e.g. FDC's newer "Foundation" flour/sugar
+        # entries only carry a RACC portion, no "1 cup" - confirmed while
+        # building this; an older "SR Legacy" entry for the same food a few
+        # slots down does). All candidates here already passed the
+        # whole-word identity filter above, so this doesn't reopen the
+        # same-word-different-food risk the rest of #54 is fixing.
+        for food in foods[:5]:
+            detail = requests.get(
+                f"https://api.nal.usda.gov/fdc/v1/food/{food['fdcId']}",
+                params={"api_key": api_key},
+                timeout=5,
+            )
+            detail.raise_for_status()
+            for portion in detail.json().get("foodPortions") or []:
+                modifier = (portion.get("modifier") or "").lower()
+                gram_weight = portion.get("gramWeight")
+                amount = portion.get("amount") or 1.0
+                if gram_weight and amount and any(w in modifier for w in measure_words):
+                    return float(gram_weight) / float(amount)
     except (requests.RequestException, ValueError, KeyError, TypeError):
         return None
     return None
