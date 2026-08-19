@@ -13,6 +13,29 @@ services:
     networks:
       - my_network
 
+  # Same image/build as grocery_scraper (#33) - runs cron in the foreground
+  # instead of scraping once and exiting, so prices stay fresh without
+  # anyone needing to remember to run `docker compose up grocery_scraper`
+  # by hand. Purely additive: grocery_scraper's one-shot behavior above is
+  # unchanged, this is an opt-in second way to run the same image. Not
+  # started by a bare `docker compose up` - add it explicitly (`docker
+  # compose up -d scraper_scheduler`) since it's meant to run continuously.
+  scraper_scheduler:
+    build: .
+    depends_on:
+      - db
+    env_file:
+      - ../.env
+    environment:
+      - DB_HOST=db
+      - DB_NAME=grocery_db
+      - DB_USER=user
+      - DB_PASS=password
+    networks:
+      - my_network
+    entrypoint: ["/app/scheduler_entrypoint.sh"]
+    restart: unless-stopped
+
   db:
     image: postgres:16
     restart: always
@@ -58,6 +81,8 @@ services:
       - db
       - tailscale
     network_mode: service:tailscale
+    env_file:
+      - ../.env
     environment:
       - DB_HOST=db
       - DB_NAME=grocery_db

@@ -44,9 +44,17 @@ cd Groceries
 docker compose up --build db grocery_scraper
 ```
 
-This starts a Postgres container and the scraper container. The scraper runs once and exits; Postgres keeps running. There's no scheduled/recurring run yet (see #33) - re-run `docker compose up grocery_scraper` manually for now.
+This starts a Postgres container and the scraper container. The scraper runs once and exits; Postgres keeps running. Re-run `docker compose up grocery_scraper` any time you want a manual one-off scrape.
 
 A full run currently takes a while - Tops alone is on the order of 20 minutes (it walks ~170 category pages). Aldi is much faster (a few minutes, smaller catalog). This is expected, not a bug.
+
+To keep prices fresh automatically instead of remembering to run this by hand, start `scraper_scheduler` instead (same image, same `.env`, no separate setup) - it runs the same scrape once a day at 3am:
+
+```
+docker compose up -d --build db scraper_scheduler
+```
+
+It's a long-running container (`restart: unless-stopped`), unlike `grocery_scraper`'s one-shot behavior - the two don't conflict and can both exist, `scraper_scheduler` is just the hands-off way to get the same result. To change the schedule, edit `Groceries/scraper-cron` and rebuild.
 
 ## Running the webapp
 
