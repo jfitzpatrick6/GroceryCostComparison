@@ -1730,7 +1730,7 @@ def merge_qty(existing_qty, new_amount, new_unit):
     """Combines a grocery-list item's free-text qty with a new amount/unit
     from the planner. Sums when both are numeric and share a unit,
     otherwise concatenates rather than guessing or dropping data."""
-    new_qty = f"{new_amount} {new_unit}".strip() if new_amount else (new_unit or "")
+    new_qty = " ".join(str(p) for p in (new_amount, new_unit) if p)
     if not existing_qty:
         return new_qty or None
     if not new_qty:
@@ -1776,7 +1776,7 @@ def add_week_to_list():
                     merged_qty = merge_qty(existing["qty"], amount, unit)
                     cur.execute("UPDATE grocery_list_items SET qty = %s WHERE id = %s", (merged_qty, existing["id"]))
                 else:
-                    qty = f"{amount} {unit}".strip() if amount else (unit or None)
+                    qty = " ".join(str(p) for p in (amount, unit) if p) or None
                     cur.execute("INSERT INTO grocery_list_items (name, qty) VALUES (%s, %s)", (ing["name"], qty))
         conn.commit()
     finally:
