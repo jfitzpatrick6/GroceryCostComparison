@@ -5,9 +5,10 @@
 <p><a href="/list">&laquo; Back to list</a></p>
 
 <h2>Cheapest store per item</h2>
+<p style="color:#666">"Cost to cover" accounts for needing to buy whole packages when your list has a quantity (e.g. needing 2 lb from 1.5 lb packages means buying 2 of them) - it's not just the cheapest price tag when that happens.</p>
 <table>
     <thead>
-        <tr><th>Item</th><th>Qty</th><th>Store</th><th>Price</th><th>Size</th><th>Unit rate</th></tr>
+        <tr><th>Item</th><th>Qty</th><th>Store</th><th>Price</th><th>Size</th><th>Unit rate</th><th>Cost to cover</th></tr>
     </thead>
     <tbody>
         {% for p in per_item %}
@@ -18,9 +19,16 @@
             <td>${{ "%.2f"|format(p.cheapest.price) }}</td>
             <td>{{ p.cheapest.size }}</td>
             <td>{% if p.cheapest.unit_price is not none %}${{ "%.2f"|format(p.cheapest.unit_price) }} / {{ p.cheapest.unit }}{% else %}-{% endif %}</td>
+            <td>
+                {% if p.cheapest.packages_needed > 1 %}
+                    {{ p.cheapest.packages_needed }} &times; ${{ "%.2f"|format(p.cheapest.price) }} = ${{ "%.2f"|format(p.cheapest.total_cost) }}
+                {% else %}
+                    ${{ "%.2f"|format(p.cheapest.total_cost) }}
+                {% endif %}
+            </td>
         </tr>
         {% else %}
-        <tr><td colspan="6">No matched items on your list yet.</td></tr>
+        <tr><td colspan="7">No matched items on your list yet.</td></tr>
         {% endfor %}
     </tbody>
 </table>

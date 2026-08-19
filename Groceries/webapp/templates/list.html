@@ -3,6 +3,27 @@
 {% block content %}
 <h1>Grocery List</h1>
 
+{% if running_low %}
+<div style="background:#fff8e1; border:1px solid #e0c060; border-radius:6px; padding:0.6rem 1rem; margin-bottom:1rem;">
+    <strong>Running low</strong>
+    {% for r in running_low %}
+    <div style="margin-top:4px;">
+        {{ r.name }} - {{ r.amount|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %} left
+        (you wanted {{ r.threshold|float|round(2) }}+)
+        {% if r.already_on_list %}
+        <span style="color:#999">Already on list</span>
+        {% else %}
+        <form method="post" action="/list/add" style="display:inline">
+            <input type="hidden" name="name" value="{{ r.name }}">
+            <input type="hidden" name="qty" value="{{ r.threshold|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %}">
+            <button type="submit">Add {{ r.threshold|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %}</button>
+        </form>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
 <form method="post" action="/list/add">
     <input type="text" name="name" placeholder="Item (e.g. chicken breast)" required>
     <input type="text" name="qty" placeholder="Qty (optional, e.g. 2 lb)">

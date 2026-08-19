@@ -1,9 +1,11 @@
 import datetime
+import math
 import os
 import re
 
 import psycopg2
 import psycopg2.extras
+import requests
 from flask import Flask, abort, redirect, render_template, request, session, url_for
 
 DB_HOST = os.getenv("DB_HOST", "db")
@@ -250,6 +252,7 @@ def grocery_list():
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             ensure_list_table(cur)
+            ensure_pantry_table(cur)
             conn.commit()
             cur.execute("SELECT id, name, qty, checked, added_by, checked_by FROM grocery_list_items ORDER BY checked, added_at")
             items = cur.fetchall()
@@ -263,20 +266,40 @@ def grocery_list():
             # deployment with no scrape history yet.
             if price_data_available(cur):
                 for item in items:
+                    # ILIKE with no wildcards is an exact (case-insensitive)
+                    # match, not a substring one - "chicken breast" would
+                    # never match "Wellsley Farms Boneless Skinless Chicken
+                    # Breasts, 4.5-6.5 lbs." without this (see #25). Matches
+                    # the %...% pattern /prices' own search already uses.
                     cur.execute("""
                         SELECT store, price, unit_price, unit
                         FROM grocery_prices_latest
                         WHERE product ILIKE %s
                         ORDER BY unit_price ASC NULLS LAST
                         LIMIT 1
-                    """, (item["name"],))
+                    """, (f"%{item['name']}%",))
                     item["match"] = cur.fetchone()
             else:
                 for item in items:
                     item["match"] = None
+
+            # "Running low" suggestions (#46) - a pantry item with a
+            # threshold set that's at/below it, unless it's already sitting
+            # unchecked on the list (no duplicate suggestions). Suggestion
+            # only, never auto-added.
+            cur.execute("""
+                SELECT name, amount, unit, threshold FROM pantry_items
+                WHERE threshold IS NOT NULL AND amount IS NOT NULL AND amount <= threshold
+                ORDER BY name
+            """)
+            running_low = []
+            unchecked_names = {i["name"].strip().lower() for i in items if not i["checked"]}
+            for row in cur.fetchall():
+                row["already_on_list"] = row["name"].strip().lower() in unchecked_names
+                running_low.append(row)
     finally:
         conn.close()
-    return render_template("list.html", items=items)
+    return render_template("list.html", items=items, running_low=running_low)
 
 
 @app.route("/list/add", methods=["POST"])
@@ -350,6 +373,10 @@ def ensure_pantry_table(cur):
         );
     """)
     cur.execute("ALTER TABLE pantry_items ADD COLUMN IF NOT EXISTS updated_by TEXT;")
+    # NULL = feature off for this item (#46) - opt-in per row, never asked
+    # at add/restock time, since most pantry rows (leftovers, one-off buys)
+    # never want a threshold and guessing one would just create noise.
+    cur.execute("ALTER TABLE pantry_items ADD COLUMN IF NOT EXISTS threshold NUMERIC;")
 
 
 _QTY_LINE = re.compile(r"^\s*([\d.]+)\s*(\S*)\s*$")
@@ -392,11 +419,27 @@ def pantry():
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             ensure_pantry_table(cur)
             conn.commit()
-            cur.execute("SELECT id, name, amount, unit, updated_by FROM pantry_items ORDER BY name")
+            cur.execute("SELECT id, name, amount, unit, updated_by, threshold FROM pantry_items ORDER BY name")
             items = cur.fetchall()
     finally:
         conn.close()
     return render_template("pantry.html", items=items)
+
+
+@app.route("/pantry/set_threshold", methods=["POST"])
+def set_pantry_threshold():
+    """Sets (or clears, if left blank) the "running low" point for one
+    pantry item (#46) - opt-in per item, doesn't touch amount/unit."""
+    item_id = request.form["id"]
+    threshold = request.form.get("threshold") or None
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE pantry_items SET threshold = %s WHERE id = %s", (threshold, item_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("pantry"))
 
 
 @app.route("/pantry/set", methods=["POST"])
@@ -440,13 +483,69 @@ def remove_pantry_item():
     return redirect(url_for("pantry"))
 
 
+_LIST_QTY_LINE = re.compile(r"^\s*([\d.]+)\s*(\S*)\s*$")
+# grocery_prices_latest.unit is always one of these canonical forms
+# (units.py, scraper-side) - map common ways a person would actually type a
+# unit on the grocery list to the same space, conservative: an unrecognized
+# unit just means package-fitting can't be computed for that item, falling
+# back to today's per-package-price behavior rather than guessing.
+_LIST_UNIT_CANONICAL = {
+    "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb",
+    "gal": "gal", "gallon": "gal", "gallons": "gal",
+    "each": "each", "ea": "each",
+    "ft": "ft", "feet": "ft", "foot": "ft",
+}
+
+
+def _parse_needed_qty(qty_text):
+    """Best-effort (amount, canonical_unit) for a grocery-list item's free-
+    text qty (#38) - e.g. "2 lb" -> (2.0, "lb"). Returns (None, None) for
+    anything not a clean "<number> <unit>" (blank, a merged "X + Y" string
+    from the planner merge, an unrecognized unit) - package-fitting is
+    skipped rather than guessed at for those, same conservative pattern as
+    restock_pantry/apply_pantry elsewhere in this file."""
+    if not qty_text:
+        return None, None
+    match = _LIST_QTY_LINE.match(qty_text)
+    if not match or not match.group(1):
+        return None, None
+    amount_str, unit_str = match.groups()
+    unit = _LIST_UNIT_CANONICAL.get(unit_str.lower())
+    if not unit:
+        return None, None
+    try:
+        return float(amount_str), unit
+    except ValueError:
+        return None, None
+
+
+def _annotate_package_fit(match, needed_qty, needed_unit):
+    """Adds packages_needed/total_cost to one price match (#38) - how many
+    whole packages of *this* product it takes to cover the needed quantity,
+    and the resulting total cost. Falls back to "1 package, this product's
+    own price" whenever the fit can't be confidently computed (no needed
+    qty, unit mismatch, or a missing/zero unit_price) - that's exactly
+    today's existing behavior, so items without a parseable qty aren't
+    affected by this at all."""
+    match["packages_needed"] = 1
+    match["total_cost"] = float(match["price"])
+    if not needed_qty or not match["unit_price"] or match["unit"] != needed_unit:
+        return
+    package_qty = float(match["price"]) / float(match["unit_price"])
+    if package_qty <= 0:
+        return
+    packages = max(1, math.ceil(needed_qty / package_qty))
+    match["packages_needed"] = packages
+    match["total_cost"] = packages * float(match["price"])
+
+
 @app.route("/list/where-to-buy")
 def where_to_buy():
     """The payoff feature (#31): for each unchecked list item, the cheapest
     store; plus a "shop one store" vs "split across stores" total
-    comparison. v1 - cheapest per item only, no store-count minimization,
-    and matching is the same naive ILIKE stand-in used elsewhere (#25's
-    real cross-store matching isn't built yet)."""
+    comparison. v1 - no store-count minimization, and matching is the same
+    naive ILIKE stand-in used elsewhere (#25's real cross-store matching
+    isn't built yet)."""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -461,25 +560,42 @@ def where_to_buy():
 
             if price_data_available(cur):
                 for item in items:
+                    # See the identical fix + comment in grocery_list() -
+                    # ILIKE with no wildcards was an exact-match bug (#25).
                     cur.execute("""
                         SELECT store, price, size, unit_price, unit
                         FROM grocery_prices_latest
                         WHERE product ILIKE %s
-                        ORDER BY unit_price ASC NULLS LAST, price ASC
-                    """, (item["name"],))
+                    """, (f"%{item['name']}%",))
                     matches = cur.fetchall()
                     if not matches:
                         unmatched.append(item)
                         continue
-                    by_store = {m["store"]: m for m in matches}
-                    per_item.append({"item": item, "cheapest": matches[0], "by_store": by_store})
+
+                    needed_qty, needed_unit = _parse_needed_qty(item["qty"])
+                    for m in matches:
+                        _annotate_package_fit(m, needed_qty, needed_unit)
+
+                    # Cheapest *per store* by total cost to actually cover
+                    # the needed quantity (#38), not by raw $/unit - a
+                    # naive dict comprehension here previously kept
+                    # whichever match sorted last globally for a store, not
+                    # that store's actual cheapest option.
+                    by_store = {}
+                    for m in matches:
+                        current = by_store.get(m["store"])
+                        if current is None or m["total_cost"] < current["total_cost"]:
+                            by_store[m["store"]] = m
+
+                    cheapest = min(by_store.values(), key=lambda m: m["total_cost"])
+                    per_item.append({"item": item, "cheapest": cheapest, "by_store": by_store})
                     all_stores.update(by_store.keys())
             else:
                 unmatched = list(items)
     finally:
         conn.close()
 
-    split_total = sum(float(p["cheapest"]["price"]) for p in per_item) if per_item else None
+    split_total = sum(p["cheapest"]["total_cost"] for p in per_item) if per_item else None
 
     store_totals = []
     for store in sorted(all_stores):
@@ -488,7 +604,7 @@ def where_to_buy():
         for p in per_item:
             match = p["by_store"].get(store)
             if match:
-                total += float(match["price"])
+                total += match["total_cost"]
                 covered += 1
         store_totals.append({
             "store": store, "total": total, "covered": covered,
@@ -507,7 +623,7 @@ RECIPE_UNIT_WORDS = (
     "g|grams?|kg|ml|l|liters?|cloves?|cans?|pinch|dash|each|ea|slices?|pieces?"
 )
 _INGREDIENT_LINE = re.compile(
-    rf"^\s*([\d./]+)?\s*({RECIPE_UNIT_WORDS})?\s*(.*?)\s*$", re.IGNORECASE
+    rf"^\s*([\d./]+)?\s*({RECIPE_UNIT_WORDS})?\b\s*(.*?)\s*$", re.IGNORECASE
 )
 # Canonical form for each recognized unit - the regex above matches plurals
 # and synonyms ("cup"/"cups", "tbsp"/"tablespoon"/"tablespoons") but the raw
@@ -578,6 +694,71 @@ def _save_ingredients(cur, recipe_id, ingredients_text):
         )
 
 
+# --- #27: "paste a whole recipe" import. Deliberately paste-only, not
+# URL-fetching - scraping arbitrary third-party recipe sites reliably needs
+# real browser rendering (this app's own grocery scrapers already show how
+# heavy that is just for a handful of known store sites, see #41/#42) and
+# raises reliability/scope concerns a copy-paste box doesn't. This is a
+# pre-fill convenience, not a silent auto-save: the parsed result always
+# lands back in the normal, editable recipe form for review before saving,
+# through the exact same /recipes/new path a manually-typed recipe uses.
+_PASTE_SECTION_HEADERS = {
+    "ingredients": re.compile(r"^\s*ingredients\s*:?\s*$", re.IGNORECASE),
+    "instructions": re.compile(r"^\s*(instructions|directions|method|steps|preparation)\s*:?\s*$", re.IGNORECASE),
+}
+_PASTE_SERVINGS = re.compile(r"(?:serves|servings?|yield)s?\s*:?\s*(\d+)", re.IGNORECASE)
+_PASTE_INGREDIENT_LEADIN = re.compile(r"^\s*[\d./]+\s")
+
+
+def parse_pasted_recipe(text):
+    """Best-effort split of a whole pasted recipe blob into the same
+    (name, servings, notes, ingredients_text) fields the structured form
+    already uses. Looks for explicit "Ingredients"/"Instructions" section
+    headers first, since that's how most recipes are actually formatted;
+    falls back to "a line starting with a number is an ingredient" when no
+    headers are found. Either way this is a heuristic, not a real parser -
+    expect it to get unusual formats wrong sometimes, which is exactly why
+    the result is only ever a pre-fill, never saved directly."""
+    lines = [line.rstrip() for line in text.splitlines()]
+    non_blank = [line for line in lines if line.strip()]
+    name = non_blank[0].strip() if non_blank else ""
+
+    servings_match = _PASTE_SERVINGS.search(text)
+    servings = servings_match.group(1) if servings_match else None
+
+    ingredients_start = None
+    instructions_start = None
+    for i, line in enumerate(lines):
+        if ingredients_start is None and _PASTE_SECTION_HEADERS["ingredients"].match(line):
+            ingredients_start = i + 1
+        elif ingredients_start is not None and instructions_start is None \
+                and _PASTE_SECTION_HEADERS["instructions"].match(line):
+            instructions_start = i
+            break
+
+    if ingredients_start is not None:
+        end = instructions_start if instructions_start is not None else len(lines)
+        ingredient_lines = [line for line in lines[ingredients_start:end] if line.strip()]
+        notes_lines = lines[instructions_start + 1:] if instructions_start is not None else []
+    else:
+        ingredient_lines, notes_lines = [], []
+        for line in non_blank[1:]:
+            (ingredient_lines if _PASTE_INGREDIENT_LEADIN.match(line) else notes_lines).append(line)
+
+    return name, servings, "\n".join(notes_lines).strip(), "\n".join(ingredient_lines)
+
+
+@app.route("/recipes/parse_paste", methods=["POST"])
+def parse_paste_recipe():
+    pasted = request.form.get("pasted", "")
+    name, servings, notes, ingredients_text = parse_pasted_recipe(pasted)
+    return render_template(
+        "recipe_form.html", recipe={"name": name, "servings": servings, "notes": notes},
+        ingredients_text=ingredients_text, form_action=url_for("new_recipe"),
+        show_paste_import=True, is_edit=False,
+    )
+
+
 @app.route("/recipes")
 def recipes():
     conn = get_connection()
@@ -601,7 +782,10 @@ def recipes():
 @app.route("/recipes/new", methods=["GET", "POST"])
 def new_recipe():
     if request.method == "GET":
-        return render_template("recipe_form.html", recipe=None, ingredients_text="")
+        return render_template(
+            "recipe_form.html", recipe=None, ingredients_text="",
+            form_action=url_for("new_recipe"), show_paste_import=True, is_edit=False,
+        )
 
     name = request.form.get("name", "").strip()
     notes = request.form.get("notes", "").strip()
@@ -663,7 +847,10 @@ def edit_recipe(recipe_id):
                 for ing in cur.fetchall():
                     parts = [p for p in (ing["amount"], ing["unit"], ing["name"]) if p]
                     lines.append(" ".join(parts))
-            return render_template("recipe_form.html", recipe=recipe, ingredients_text="\n".join(lines))
+            return render_template(
+                "recipe_form.html", recipe=recipe, ingredients_text="\n".join(lines),
+                form_action=url_for("edit_recipe", recipe_id=recipe_id), show_paste_import=False, is_edit=True,
+            )
 
         name = request.form.get("name", "").strip()
         notes = request.form.get("notes", "").strip()
@@ -718,11 +905,91 @@ def ensure_planner_table(cur):
     cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS cooked BOOLEAN NOT NULL DEFAULT FALSE;")
     cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS cooked_at TIMESTAMP;")
     cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS cooked_by TEXT;")
+    # NULL = use the recipe's own `servings` as-is, no scaling (#47) - only
+    # set when someone overrides it for this particular night (e.g. company
+    # coming), so a recipe used elsewhere unscaled is unaffected.
+    cur.execute("ALTER TABLE meal_plan_slots ADD COLUMN IF NOT EXISTS servings INTEGER;")
+    # A slot used to hold exactly one recipe (unique per week/day/meal). #44
+    # lets a slot hold several recipes (e.g. burgers + buns), so recipe_id
+    # has to join the uniqueness instead of being excluded from it - swap
+    # the old constraint for the new one, idempotently, since this runs on
+    # every request rather than as a one-off migration.
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'meal_plan_slots'::regclass
+                AND conname = 'meal_plan_slots_week_start_day_of_week_meal_key'
+            ) THEN
+                ALTER TABLE meal_plan_slots DROP CONSTRAINT meal_plan_slots_week_start_day_of_week_meal_key;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'meal_plan_slots'::regclass
+                AND conname = 'meal_plan_slots_slot_recipe_key'
+            ) THEN
+                ALTER TABLE meal_plan_slots ADD CONSTRAINT meal_plan_slots_slot_recipe_key
+                    UNIQUE (week_start, day_of_week, meal, recipe_id);
+            END IF;
+        END $$;
+    """)
+
+
+def ensure_planner_extras_table(cur):
+    """Loose, non-recipe ingredients on a meal slot (#50) - e.g. taco night's
+    ground-beef recipe plus shredded cheese/lettuce that don't deserve a
+    whole recipe of their own. Deliberately a separate table rather than a
+    recipe_id-less row on meal_plan_slots - extras don't have a cooked flag
+    or a recipe to look up, they're just a line item."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS meal_plan_extras (
+            id SERIAL PRIMARY KEY,
+            week_start DATE NOT NULL,
+            day_of_week INTEGER NOT NULL,
+            meal TEXT NOT NULL DEFAULT 'dinner',
+            name TEXT NOT NULL,
+            amount TEXT,
+            unit TEXT
+        );
+    """)
+
+
+def ensure_cook_depletions_table(cur):
+    """Snapshot of what "Mark cooked" subtracted from pantry for one day's
+    meal, per ingredient (#48) - lets "Used tonight" be edited after the
+    fact without stacking corrections: each edit recomputes pantry amount
+    from `pantry_before`, not from whatever the pantry currently reads."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cook_depletions (
+            id SERIAL PRIMARY KEY,
+            week_start DATE NOT NULL,
+            day_of_week INTEGER NOT NULL,
+            meal TEXT NOT NULL,
+            ingredient_name TEXT NOT NULL,
+            unit TEXT,
+            pantry_before NUMERIC NOT NULL,
+            used_amount NUMERIC NOT NULL
+        );
+    """)
 
 
 def week_start_for(d):
     """Sunday on or before the given date."""
     return d - datetime.timedelta(days=(d.weekday() + 1) % 7)
+
+
+# Dinner-first (#28), but the slot mechanism from #44 (multiple recipes per
+# slot) generalizes cleanly to other meals - a tab per meal (#45) rather
+# than widening the day grid, so a family that only plans dinner never sees
+# lunch/breakfast at all unless they click over.
+MEALS = ("breakfast", "lunch", "dinner")
+MEAL_LABELS = {"breakfast": "Breakfast", "lunch": "Lunch", "dinner": "Dinner"}
+
+
+def _meal_param():
+    meal = request.values.get("meal", "dinner")
+    return meal if meal in MEALS else "dinner"
 
 
 @app.route("/planner")
@@ -732,30 +999,71 @@ def planner():
         week_start = datetime.date.fromisoformat(week_param)
     else:
         week_start = week_start_for(datetime.date.today())
+    meal = _meal_param()
 
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             ensure_planner_table(cur)
             ensure_recipes_tables(cur)
+            ensure_planner_extras_table(cur)
+            ensure_cook_depletions_table(cur)
             conn.commit()
             cur.execute("""
-                SELECT s.day_of_week, r.id AS recipe_id, r.name AS recipe_name, s.cooked, s.cooked_by
+                SELECT s.day_of_week, r.id AS recipe_id, r.name AS recipe_name, s.cooked, s.cooked_by,
+                       s.servings AS slot_servings, r.servings AS recipe_servings
                 FROM meal_plan_slots s
                 JOIN recipes r ON r.id = s.recipe_id
-                WHERE s.week_start = %s AND s.meal = 'dinner'
-            """, (week_start,))
-            assigned = {row["day_of_week"]: row for row in cur.fetchall()}
+                WHERE s.week_start = %s AND s.meal = %s
+                ORDER BY s.day_of_week, r.name
+            """, (week_start, meal))
+            assigned = {}
+            for row in cur.fetchall():
+                assigned.setdefault(row["day_of_week"], []).append(row)
+
+            cur.execute(
+                "SELECT id, day_of_week, name, amount, unit FROM meal_plan_extras "
+                "WHERE week_start = %s AND meal = %s ORDER BY name",
+                (week_start, meal),
+            )
+            assigned_extras = {}
+            for row in cur.fetchall():
+                assigned_extras.setdefault(row["day_of_week"], []).append(row)
+
+            cur.execute(
+                "SELECT day_of_week, ingredient_name, unit, used_amount FROM cook_depletions "
+                "WHERE week_start = %s AND meal = %s ORDER BY ingredient_name",
+                (week_start, meal),
+            )
+            used_tonight = {}
+            for row in cur.fetchall():
+                used_tonight.setdefault(row["day_of_week"], []).append(row)
+
             cur.execute("SELECT id, name FROM recipes ORDER BY name")
             all_recipes = cur.fetchall()
     finally:
         conn.close()
 
-    days = [{"index": i, "name": DAY_NAMES[i], "date": week_start + datetime.timedelta(days=i),
-             "recipe": assigned.get(i)} for i in range(7)]
+    days = []
+    for i in range(7):
+        recipes = assigned.get(i, [])
+        days.append({
+            "index": i, "name": DAY_NAMES[i], "date": week_start + datetime.timedelta(days=i),
+            "recipes": recipes,
+            "extras": assigned_extras.get(i, []),
+            # All recipes in a slot get cooked/depleted together as one
+            # action (see mark_cooked) - "cooked" for the day is true only
+            # once every recipe currently in it is, so adding a new recipe
+            # to an already-cooked day correctly shows it as needing
+            # cooking again rather than silently inheriting the old state.
+            "cooked": bool(recipes) and all(r["cooked"] for r in recipes),
+            "cooked_by": recipes[0]["cooked_by"] if recipes and recipes[0]["cooked"] else None,
+            "used_tonight": used_tonight.get(i, []),
+        })
 
     return render_template(
         "planner.html", week_start=week_start, days=days, all_recipes=all_recipes,
+        meal=meal, meals=MEALS, meal_labels=MEAL_LABELS,
         prev_week=week_start - datetime.timedelta(days=7),
         next_week=week_start + datetime.timedelta(days=7),
     )
@@ -763,44 +1071,163 @@ def planner():
 
 @app.route("/planner/set", methods=["POST"])
 def set_planner_slot():
+    """Adds a recipe to this day's dinner (#44) - a slot can hold several
+    recipes now (e.g. a burger patty recipe + a bun recipe), so this is an
+    add, not a replace. The picker always resets to its placeholder after
+    each pick rather than showing "current" state - the chips do that."""
     week_start = request.form["week_start"]
     day_of_week = int(request.form["day_of_week"])
     recipe_id = request.form.get("recipe_id") or None
+    meal = _meal_param()
+
+    if recipe_id:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                ensure_planner_table(cur)
+                cur.execute("""
+                    INSERT INTO meal_plan_slots (week_start, day_of_week, meal, recipe_id)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (week_start, day_of_week, meal, recipe_id) DO NOTHING
+                """, (week_start, day_of_week, meal, recipe_id))
+            conn.commit()
+        finally:
+            conn.close()
+    return redirect(url_for("planner", week=week_start, meal=meal))
+
+
+@app.route("/planner/remove_recipe", methods=["POST"])
+def remove_planner_recipe():
+    """Removes one recipe from this day's meal, leaving any other recipes
+    already assigned to that slot untouched (#44)."""
+    week_start = request.form["week_start"]
+    day_of_week = int(request.form["day_of_week"])
+    recipe_id = request.form["recipe_id"]
+    meal = _meal_param()
 
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             ensure_planner_table(cur)
-            if recipe_id:
-                # Swapping the recipe resets cooked/cooked_at - it's a
-                # different meal now, shouldn't inherit "already cooked"
-                # from whatever used to be in this slot (see #32).
-                cur.execute("""
-                    INSERT INTO meal_plan_slots (week_start, day_of_week, meal, recipe_id)
-                    VALUES (%s, %s, 'dinner', %s)
-                    ON CONFLICT (week_start, day_of_week, meal)
-                    DO UPDATE SET recipe_id = EXCLUDED.recipe_id, cooked = FALSE, cooked_at = NULL
-                """, (week_start, day_of_week, recipe_id))
-            else:
-                cur.execute(
-                    "DELETE FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s AND meal = 'dinner'",
-                    (week_start, day_of_week),
-                )
+            cur.execute(
+                "DELETE FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s "
+                "AND meal = %s AND recipe_id = %s",
+                (week_start, day_of_week, meal, recipe_id),
+            )
         conn.commit()
     finally:
         conn.close()
-    return redirect(url_for("planner", week=week_start))
+    return redirect(url_for("planner", week=week_start, meal=meal))
 
 
-def deplete_pantry_for_recipe(cur, recipe_id):
-    """Subtracts a cooked recipe's ingredients from pantry (#30/#32). Same
-    conservative matching as apply_pantry: only when both sides have a
-    clean numeric amount and the exact same unit; clamps at 0 rather than
-    going negative."""
-    cur.execute("SELECT name, amount, unit FROM recipe_ingredients WHERE recipe_id = %s", (recipe_id,))
-    for ing in cur.fetchall():
-        if not ing["amount"]:
-            continue
+@app.route("/planner/add_extra", methods=["POST"])
+def add_planner_extra():
+    """Adds one loose ingredient line to this day's meal (#50) - same
+    "<amount> <unit> <name>" free-text grammar as a recipe's ingredient
+    box, one line at a time rather than a textarea, since this is meant for
+    the handful of extras a meal needs beyond its recipe(s)."""
+    week_start = request.form["week_start"]
+    day_of_week = int(request.form["day_of_week"])
+    meal = _meal_param()
+    line = request.form.get("line", "").strip()
+
+    if line:
+        amount, unit, name = parse_ingredient_line(line)
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                ensure_planner_extras_table(cur)
+                cur.execute(
+                    "INSERT INTO meal_plan_extras (week_start, day_of_week, meal, name, amount, unit) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (week_start, day_of_week, meal, name, amount, unit),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    return redirect(url_for("planner", week=week_start, meal=meal))
+
+
+@app.route("/planner/remove_extra", methods=["POST"])
+def remove_planner_extra():
+    week_start = request.form["week_start"]
+    meal = _meal_param()
+    extra_id = request.form["extra_id"]
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            ensure_planner_extras_table(cur)
+            cur.execute("DELETE FROM meal_plan_extras WHERE id = %s", (extra_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("planner", week=week_start, meal=meal))
+
+
+@app.route("/planner/set_servings", methods=["POST"])
+def set_planner_servings():
+    """Overrides how many servings this recipe is being made for on this
+    specific night (#47) - e.g. company's coming, double the burger patties
+    just for Friday. Blank/0 clears the override and falls back to the
+    recipe's own `servings`, which is what every slot does by default -
+    scaling is opt-in per night, never required."""
+    week_start = request.form["week_start"]
+    day_of_week = int(request.form["day_of_week"])
+    recipe_id = request.form["recipe_id"]
+    meal = _meal_param()
+    servings = request.form.get("servings") or None
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            ensure_planner_table(cur)
+            cur.execute(
+                "UPDATE meal_plan_slots SET servings = %s WHERE week_start = %s AND day_of_week = %s "
+                "AND meal = %s AND recipe_id = %s",
+                (servings, week_start, day_of_week, meal, recipe_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("planner", week=week_start, meal=meal))
+
+
+def _scale_factor(slot_servings, recipe_servings):
+    """(scaled_servings / base_servings), or 1.0 (no scaling) whenever
+    either side is missing/zero - conservative, never guesses a scale."""
+    if not slot_servings or not recipe_servings:
+        return 1.0
+    try:
+        factor = float(slot_servings) / float(recipe_servings)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 1.0
+    return factor if factor > 0 else 1.0
+
+
+def _format_amount(value):
+    return str(value).rstrip("0").rstrip(".") if "." in str(value) else str(value)
+
+
+def deplete_pantry_for_slot(cur, week_start, day_of_week, meal):
+    """Subtracts one day's meal (every recipe + loose extra in the slot,
+    combined) from pantry (#30/#32/#48). Same conservative matching as
+    apply_pantry: only when both sides have a clean numeric amount and the
+    exact same unit; clamps at 0 rather than going negative.
+
+    Takes a fresh pantry_before snapshot per ingredient and records it in
+    cook_depletions - this is what "Used tonight" (#48) edits against later,
+    so correcting a used amount recomputes from that snapshot instead of
+    stacking another delta on top of whatever the pantry currently reads.
+    Re-running this (e.g. cook -> undo -> cook again) always takes a new
+    snapshot from current pantry state, matching "mark cooked" being a
+    one-tap action with no confirmation step."""
+    ensure_cook_depletions_table(cur)
+    cur.execute(
+        "DELETE FROM cook_depletions WHERE week_start = %s AND day_of_week = %s AND meal = %s",
+        (week_start, day_of_week, meal),
+    )
+    for ing in slot_ingredient_lines(cur, week_start, day_of_week, meal):
         try:
             used = float(ing["amount"])
         except (TypeError, ValueError):
@@ -809,18 +1236,74 @@ def deplete_pantry_for_recipe(cur, recipe_id):
         row = cur.fetchone()
         if not row or row["amount"] is None or row["unit"] != ing["unit"]:
             continue
-        remaining = max(0.0, float(row["amount"]) - used)
+        pantry_before = float(row["amount"])
+        remaining = max(0.0, pantry_before - used)
         cur.execute(
             "UPDATE pantry_items SET amount = %s, updated_at = now(), updated_by = %s WHERE id = %s",
             (remaining, active_profile(), row["id"]),
         )
+        cur.execute(
+            "INSERT INTO cook_depletions (week_start, day_of_week, meal, ingredient_name, unit, pantry_before, used_amount) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (week_start, day_of_week, meal, ing["name"], ing["unit"], pantry_before, used),
+        )
+
+
+@app.route("/planner/adjust_used", methods=["POST"])
+def adjust_used():
+    """Corrects how much of an ingredient actually got used tonight (#48) -
+    the "Used tonight" line under a cooked meal. Recomputes pantry from the
+    stored pantry_before snapshot rather than the pantry's current amount,
+    so editing the same line twice doesn't double-subtract, and this stays
+    correct regardless of what else has touched the pantry meanwhile."""
+    week_start = request.form["week_start"]
+    day_of_week = int(request.form["day_of_week"])
+    meal = _meal_param()
+    ingredient_name = request.form["ingredient_name"]
+    unit = request.form.get("unit") or None
+    try:
+        new_used = float(request.form["used_amount"])
+    except (KeyError, ValueError):
+        return redirect(url_for("planner", week=week_start, meal=meal))
+    new_used = max(0.0, new_used)
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            ensure_cook_depletions_table(cur)
+            ensure_pantry_table(cur)
+            cur.execute(
+                "SELECT id, pantry_before FROM cook_depletions WHERE week_start = %s AND day_of_week = %s "
+                "AND meal = %s AND ingredient_name = %s AND unit IS NOT DISTINCT FROM %s",
+                (week_start, day_of_week, meal, ingredient_name, unit),
+            )
+            depletion = cur.fetchone()
+            if depletion:
+                new_pantry_amount = max(0.0, float(depletion["pantry_before"]) - new_used)
+                cur.execute(
+                    "UPDATE cook_depletions SET used_amount = %s WHERE id = %s",
+                    (new_used, depletion["id"]),
+                )
+                cur.execute(
+                    "UPDATE pantry_items SET amount = %s, updated_at = now(), updated_by = %s "
+                    "WHERE lower(name) = lower(%s) AND unit IS NOT DISTINCT FROM %s",
+                    (new_pantry_amount, active_profile(), ingredient_name, unit),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return redirect(url_for("planner", week=week_start, meal=meal))
 
 
 @app.route("/planner/cook", methods=["POST"])
 def mark_cooked():
+    """Marks every recipe assigned to this day's meal cooked together as
+    one action (#44) - burger patty + bun are one meal, not two separate
+    cook events, so pantry gets depleted for all recipes in the slot."""
     week_start = request.form["week_start"]
     day_of_week = int(request.form["day_of_week"])
     cooked = request.form["cooked"] == "1"
+    meal = _meal_param()
 
     conn = get_connection()
     try:
@@ -828,42 +1311,73 @@ def mark_cooked():
             ensure_planner_table(cur)
             ensure_pantry_table(cur)
             cur.execute(
-                "SELECT id, recipe_id FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s AND meal = 'dinner'",
-                (week_start, day_of_week),
+                "SELECT id, recipe_id FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s AND meal = %s",
+                (week_start, day_of_week, meal),
             )
-            slot = cur.fetchone()
-            if slot:
+            slots = cur.fetchall()
+            for slot in slots:
                 cur.execute(
                     "UPDATE meal_plan_slots SET cooked = %s, cooked_at = CASE WHEN %s THEN now() ELSE NULL END, "
                     "cooked_by = CASE WHEN %s THEN %s ELSE cooked_by END WHERE id = %s",
                     (cooked, cooked, cooked, active_profile(), slot["id"]),
                 )
-                # Deplete on marking cooked, not on un-marking (matches the
-                # restock-only-on-check, not-on-uncheck asymmetry in #30 -
-                # manual pantry correction is always available instead of
-                # trying to make this perfectly reversible).
-                if cooked:
-                    deplete_pantry_for_recipe(cur, slot["recipe_id"])
+            # Deplete once for the whole slot (every recipe + extra combined,
+            # #48/#50), not once per recipe - two recipes both needing salt
+            # should net one depletion, not two independent ones. Deplete on
+            # marking cooked, not on un-marking (matches the
+            # restock-only-on-check, not-on-uncheck asymmetry in #30 - manual
+            # pantry correction, i.e. "Used tonight" (#48), is always
+            # available instead of trying to make this perfectly reversible).
+            if cooked and slots:
+                deplete_pantry_for_slot(cur, week_start, day_of_week, meal)
         conn.commit()
     finally:
         conn.close()
-    return redirect(url_for("planner", week=week_start))
+    return redirect(url_for("planner", week=week_start, meal=meal))
 
 
 def get_week_ingredients(cur, week_start):
-    """Combined (name, unit, amount) list for a planned week. Sums amounts
-    where numeric and sharing a unit, otherwise lists them separately -
-    see #28, exact unit math is explicitly OK to be sloppy for v1 (real
-    recipe-unit handling is #36's job later)."""
+    """Combined (name, unit, amount) list for a planned week, across every
+    meal (breakfast/lunch/dinner, #45) - the shopping list should reflect
+    everything planned, not just dinner. Sums amounts where numeric and
+    sharing a unit, otherwise lists them separately - see #28, exact unit
+    math is explicitly OK to be sloppy for v1 (real recipe-unit handling is
+    #36's job later). Includes loose ad-hoc extras (#50) and recipe amounts
+    scaled per-slot (#47) - both participate exactly like base recipe
+    ingredients."""
+    ensure_planner_extras_table(cur)
     cur.execute("""
-        SELECT i.name, i.amount, i.unit
+        SELECT i.name, i.amount, i.unit, s.servings AS slot_servings, r.servings AS recipe_servings
         FROM meal_plan_slots s
+        JOIN recipes r ON r.id = s.recipe_id
         JOIN recipe_ingredients i ON i.recipe_id = s.recipe_id
-        WHERE s.week_start = %s AND s.meal = 'dinner'
-        ORDER BY i.name
+        WHERE s.week_start = %s
     """, (week_start,))
-    ingredient_rows = cur.fetchall()
+    ingredient_rows = [_scale_ingredient_row(row) for row in cur.fetchall()]
 
+    cur.execute("SELECT name, amount, unit FROM meal_plan_extras WHERE week_start = %s", (week_start,))
+    ingredient_rows.extend(cur.fetchall())
+
+    return _combine_ingredient_rows(ingredient_rows)
+
+
+def _scale_ingredient_row(row):
+    """Applies a recipe's per-slot servings scale (#47) to one ingredient
+    row; non-numeric amounts ("a pinch") pass through unscaled rather than
+    erroring."""
+    amount = row["amount"]
+    factor = _scale_factor(row["slot_servings"], row["recipe_servings"])
+    if amount and factor != 1.0:
+        try:
+            amount = _format_amount(float(amount) * factor)
+        except (TypeError, ValueError):
+            pass
+    return {"name": row["name"], "amount": amount, "unit": row["unit"]}
+
+
+def _combine_ingredient_rows(ingredient_rows):
+    """Sums (name, unit) groups where every amount in the group is numeric;
+    otherwise joins the raw amount strings rather than guessing."""
     grouped = {}
     for row in ingredient_rows:
         key = (row["name"].lower(), row["unit"])
@@ -882,7 +1396,7 @@ def get_week_ingredients(cur, week_start):
                 all_numeric = False
                 break
         if entry["amounts"] and all_numeric:
-            display_amount = str(total).rstrip("0").rstrip(".") if "." in str(total) else str(total)
+            display_amount = _format_amount(total)
         elif entry["amounts"]:
             display_amount = " + ".join(entry["amounts"])
         else:
@@ -890,6 +1404,29 @@ def get_week_ingredients(cur, week_start):
         combined.append({"name": entry["name"], "unit": entry["unit"], "amount": display_amount})
     combined.sort(key=lambda e: e["name"].lower())
     return combined
+
+
+def slot_ingredient_lines(cur, week_start, day_of_week, meal):
+    """Same combined (name, unit, amount) shape as get_week_ingredients, but
+    scoped to one day's meal - what "Mark cooked" actually depletes from
+    pantry and what "Used tonight" (#48) edits."""
+    ensure_planner_extras_table(cur)
+    cur.execute("""
+        SELECT i.name, i.amount, i.unit, s.servings AS slot_servings, r.servings AS recipe_servings
+        FROM meal_plan_slots s
+        JOIN recipes r ON r.id = s.recipe_id
+        JOIN recipe_ingredients i ON i.recipe_id = s.recipe_id
+        WHERE s.week_start = %s AND s.day_of_week = %s AND s.meal = %s
+    """, (week_start, day_of_week, meal))
+    ingredient_rows = [_scale_ingredient_row(row) for row in cur.fetchall()]
+
+    cur.execute(
+        "SELECT name, amount, unit FROM meal_plan_extras WHERE week_start = %s AND day_of_week = %s AND meal = %s",
+        (week_start, day_of_week, meal),
+    )
+    ingredient_rows.extend(cur.fetchall())
+
+    return _combine_ingredient_rows(ingredient_rows)
 
 
 def apply_pantry(cur, combined):
@@ -915,6 +1452,142 @@ def apply_pantry(cur, combined):
         ing["pantry_have"] = have
         remaining = max(0.0, needed - have)
         ing["need_amount"] = str(remaining).rstrip("0").rstrip(".") if "." in str(remaining) else str(remaining)
+    return combined
+
+
+# --- #36: cooking-unit -> purchase-unit (lb/gal) conversion via USDA
+# FoodData Central. Scoped deliberately narrow for v1: cup/tbsp/tsp go
+# through USDA (they're ambiguous - a cup of flour and a cup of oil weigh
+# very different amounts, no way to convert without per-ingredient data);
+# g/kg/oz/lb/ml/l convert with a fixed factor, no lookup needed. Countable
+# units (each/clove/can/slice/piece/pinch/dash) are intentionally not
+# attempted - USDA's per-item weights vary too much (see e.g. an egg:
+# 38-63g depending on "small" vs "jumbo") to guess at safely.
+_USDA_MASS_TO_LB = {"oz": 1 / 16, "lb": 1.0, "g": 0.00220462, "kg": 2.20462}
+_USDA_VOLUME_TO_GAL = {"ml": 0.000264172, "l": 0.264172}
+# USDA's `modifier` text is inconsistent between foods - sometimes the
+# abbreviation ("tsp"), sometimes spelled out ("teaspoon") - match either.
+_USDA_MEASURE_WORDS = {"cup": ["cup"], "tbsp": ["tbsp", "tablespoon"], "tsp": ["tsp", "teaspoon"]}
+_GRAMS_PER_LB = 453.592
+
+
+def ensure_ingredient_conversions_table(cur):
+    """Local cache of resolved cooking-unit -> grams-per-unit lookups (#36)
+    so a repeat ingredient (flour, sugar, etc. show up in most weeks) never
+    re-hits the USDA API. Grows organically as new ingredients are used;
+    never pre-seeded."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ingredient_conversions (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            unit TEXT NOT NULL,
+            grams_per_unit NUMERIC NOT NULL,
+            updated_at TIMESTAMP DEFAULT now(),
+            UNIQUE (name, unit)
+        );
+    """)
+
+
+def _usda_grams_per_unit(name, measure_words):
+    """Looks up how many grams one of `measure_words` (e.g. ["tsp",
+    "teaspoon"]) of `name`
+    weighs, via USDA FoodData Central. Returns None on any failure (no API
+    key, no network, no match, no matching portion) rather than guessing -
+    a missing purchase estimate is fine, a wrong one silently corrupts the
+    shopping list."""
+    api_key = os.getenv("USDA_API_KEY")
+    if not api_key:
+        return None
+    try:
+        search = requests.get(
+            "https://api.nal.usda.gov/fdc/v1/foods/search",
+            params={"query": name, "pageSize": 5, "dataType": "SR Legacy,Foundation", "api_key": api_key},
+            timeout=5,
+        )
+        search.raise_for_status()
+        foods = search.json().get("foods", [])
+        # USDA's search is fuzzy relevance, not exact - "salt" can top-match
+        # "Butter, salted". Require a whole-word hit from the query in the
+        # result's description before trusting its data at all; a plain
+        # substring check isn't enough ("salt" is a substring of "salted").
+        # This can still reject good matches or accept a same-word-different-
+        # food match (e.g. two different "pepper"s) - it narrows the risk,
+        # doesn't eliminate it.
+        query_words = [w for w in re.findall(r"[a-z]+", name.lower()) if len(w) >= 3]
+        foods = [
+            f for f in foods
+            if any(re.search(rf"\b{re.escape(w)}\b", f.get("description", "").lower()) for w in query_words)
+        ]
+        if not foods:
+            return None
+        detail = requests.get(
+            f"https://api.nal.usda.gov/fdc/v1/food/{foods[0]['fdcId']}",
+            params={"api_key": api_key},
+            timeout=5,
+        )
+        detail.raise_for_status()
+        for portion in detail.json().get("foodPortions") or []:
+            modifier = (portion.get("modifier") or "").lower()
+            gram_weight = portion.get("gramWeight")
+            amount = portion.get("amount") or 1.0
+            if gram_weight and amount and any(w in modifier for w in measure_words):
+                return float(gram_weight) / float(amount)
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        return None
+    return None
+
+
+def resolve_purchase_amount(cur, name, amount_str, unit):
+    """Best-effort (amount, unit) in purchase terms (lb or gal) for one
+    ingredient line (#36) - e.g. "2 cups flour" -> "~0.55 lb". Returns None
+    when it can't resolve confidently, which is the common case for v1's
+    intentionally narrow unit coverage."""
+    try:
+        amount = float(amount_str)
+    except (TypeError, ValueError):
+        return None
+    if not unit:
+        return None
+    unit = unit.lower()
+
+    if unit in _USDA_MASS_TO_LB:
+        return round(amount * _USDA_MASS_TO_LB[unit], 2), "lb"
+    if unit in _USDA_VOLUME_TO_GAL:
+        return round(amount * _USDA_VOLUME_TO_GAL[unit], 3), "gal"
+
+    measure_words = _USDA_MEASURE_WORDS.get(unit)
+    if not measure_words:
+        return None
+
+    ensure_ingredient_conversions_table(cur)
+    cur.execute(
+        "SELECT grams_per_unit FROM ingredient_conversions WHERE lower(name) = lower(%s) AND unit = %s",
+        (name, unit),
+    )
+    row = cur.fetchone()
+    if row:
+        grams_per_unit = float(row["grams_per_unit"] if isinstance(row, dict) else row[0])
+    else:
+        grams_per_unit = _usda_grams_per_unit(name, measure_words)
+        if grams_per_unit is None:
+            return None
+        cur.execute(
+            "INSERT INTO ingredient_conversions (name, unit, grams_per_unit) VALUES (%s, %s, %s) "
+            "ON CONFLICT (name, unit) DO UPDATE SET grams_per_unit = EXCLUDED.grams_per_unit, updated_at = now()",
+            (name, unit, grams_per_unit),
+        )
+
+    return round(amount * grams_per_unit / _GRAMS_PER_LB, 2), "lb"
+
+
+def apply_purchase_estimates(cur, combined):
+    """Annotates each combined ingredient with a best-effort purchase-unit
+    estimate (#36), for display only - doesn't change what gets added to
+    the grocery list (#38's job, package-size fitting, is the next step
+    once this exists)."""
+    for ing in combined:
+        resolved = resolve_purchase_amount(cur, ing["name"], ing["amount"], ing["unit"])
+        ing["purchase_amount"], ing["purchase_unit"] = resolved if resolved else (None, None)
     return combined
 
 
@@ -978,6 +1651,8 @@ def planner_ingredients():
             conn.commit()
             combined = get_week_ingredients(cur, week_start)
             apply_pantry(cur, combined)
+            apply_purchase_estimates(cur, combined)
+            conn.commit()
     finally:
         conn.close()
     return render_template("planner_ingredients.html", week_start=week_start, combined=combined)

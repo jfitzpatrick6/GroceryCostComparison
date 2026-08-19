@@ -10,7 +10,24 @@
         table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
         th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; }
         th a { text-decoration: none; }
-        input[type=text] { padding: 0.4rem; width: 20rem; }
+        input[type=text] { padding: 0.4rem; width: 20rem; max-width: 100%; }
+        /* Real usage is mostly a phone at the store or checking "what's for
+           dinner" (#49), not the laptop planning happened on - bigger tap
+           targets and no page-wide horizontal scroll, without restyling
+           every page into cards (deliberately not a redesign). */
+        button, input[type=submit], select, input[type=number] {
+            min-height: 2.75rem; font-size: 1rem; padding: 0.4rem 0.6rem;
+        }
+        input[type=text] { min-height: 2.75rem; font-size: 1rem; }
+        @media (max-width: 600px) {
+            body { margin: 0.75rem; }
+            nav a { margin-right: 0.6rem; display: inline-block; padding: 0.3rem 0; }
+            /* Data tables can scroll within themselves; the page never
+               should - table becomes its own horizontally-scrollable block
+               while thead/tbody/tr/td keep their table layout, so no
+               per-page markup changes are needed to get this. */
+            table { display: block; overflow-x: auto; white-space: nowrap; }
+        }
     </style>
 </head>
 <body>

@@ -13,14 +13,26 @@
 
 <table>
     <thead>
-        <tr><th>Item</th><th>Amount</th><th>Unit</th><th>Last updated by</th><th></th></tr>
+        <tr><th>Item</th><th>Amount</th><th>Unit</th><th>Low at</th><th>Last updated by</th><th></th></tr>
     </thead>
     <tbody>
         {% for item in items %}
         <tr>
-            <td>{{ item.name }}</td>
+            <td>
+                {{ item.name }}
+                {% if item.threshold is not none and item.amount is not none and item.amount|float <= item.threshold|float %}
+                <span style="color:#b30; font-size:0.85em;">low</span>
+                {% endif %}
+            </td>
             <td>{{ item.amount if item.amount is not none else "" }}</td>
             <td>{{ item.unit or "" }}</td>
+            <td>
+                <form method="post" action="/pantry/set_threshold" style="display:inline">
+                    <input type="hidden" name="id" value="{{ item.id }}">
+                    <input type="number" name="threshold" min="0" step="any" value="{{ item.threshold if item.threshold is not none else '' }}"
+                           placeholder="off" onchange="this.form.submit()" style="width:4em;">
+                </form>
+            </td>
             <td style="color:#999">{{ item.updated_by or "?" }}</td>
             <td>
                 <form method="post" action="/pantry/remove" style="display:inline">
@@ -30,7 +42,7 @@
             </td>
         </tr>
         {% else %}
-        <tr><td colspan="5">Pantry is empty.</td></tr>
+        <tr><td colspan="6">Pantry is empty.</td></tr>
         {% endfor %}
     </tbody>
 </table>

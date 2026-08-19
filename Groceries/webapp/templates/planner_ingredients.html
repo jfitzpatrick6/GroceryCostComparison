@@ -8,6 +8,9 @@
     {% for item in combined %}
     <li>
         {% if item.amount %}{{ item.amount }} {% endif %}{% if item.unit %}{{ item.unit }} {% endif %}{{ item.name }}
+        {% if item.purchase_amount is not none %}
+            <span style="color:#666">(~{{ item.purchase_amount }} {{ item.purchase_unit }})</span>
+        {% endif %}
         {% if item.pantry_have is not none %}
             - have {{ item.pantry_have }} {{ item.unit }} in pantry
             {% if item.need_amount == "0" %}

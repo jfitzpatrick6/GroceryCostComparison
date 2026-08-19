@@ -1,8 +1,20 @@
 {% extends "base.html" %}
-{% block title %}{{ "Edit" if recipe else "New" }} Recipe - Grocery Cost Comparison{% endblock %}
+{% block title %}{{ "Edit" if is_edit else "New" }} Recipe - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>{{ "Edit" if recipe else "New" }} Recipe</h1>
-<form method="post">
+<h1>{{ "Edit" if is_edit else "New" }} Recipe</h1>
+
+{% if show_paste_import %}
+<details style="margin-bottom:1rem;">
+    <summary>Paste a whole recipe instead</summary>
+    <p style="color:#666">Paste the whole thing - title, ingredients, instructions, all of it. This fills in the fields below for you to check over, it doesn't save anything by itself.</p>
+    <form method="post" action="/recipes/parse_paste">
+        <textarea name="pasted" rows="10" style="width:100%" placeholder="Paste a recipe here..."></textarea>
+        <p><button type="submit">Fill in the form below</button></p>
+    </form>
+</details>
+{% endif %}
+
+<form method="post" action="{{ form_action }}">
     <p><label>Name<br><input type="text" name="name" value="{{ recipe.name if recipe else '' }}" required style="width:100%"></label></p>
     <p><label>Servings<br><input type="number" name="servings" value="{{ recipe.servings if recipe else '' }}"></label></p>
     <p><label>Notes<br><textarea name="notes" rows="3" style="width:100%">{{ recipe.notes if recipe else '' }}</textarea></label></p>
