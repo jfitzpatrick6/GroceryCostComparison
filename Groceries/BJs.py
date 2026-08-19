@@ -21,18 +21,26 @@ def main(store):
 
                 if facets.get('weighted_item') == 'Y':
                     # By-weight items (produce, fresh meat/poultry) don't carry
-                    # a `prices` field at all - BJs only exposes a min/max price
-                    # over the pack's min/max weight (see #16). There's no
-                    # single "the" price for these (real packages vary), so
-                    # this uses the midpoint of both ranges as an honest
-                    # estimate rather than pretending it's exact.
+                    # a `prices` field at all - BJs only exposes a min/max
+                    # *per-pound rate* over the pack's min/max weight (see
+                    # #16, #51 - verified against live data: a "$2.19-2.69"
+                    # range on a 4.5-6.5 lb chicken breast pack is obviously
+                    # $/lb, not a total package price). There's no single
+                    # "the" rate for these (real packages vary), so this uses
+                    # the midpoint of both ranges as an honest estimate
+                    # rather than pretending it's exact.
                     attrs = product.get('data', {}).get('attr', {})
                     min_price, max_price = facets.get('min_price'), facets.get('max_price')
                     min_weight, max_weight = attrs.get('minpackweight'), attrs.get('maxpackweight')
                     if None in (min_price, max_price, min_weight, max_weight):
                         raise ValueError(f"weighted item missing price/weight range: {facets}, {attrs}")
-                    product_price = (float(min_price) + float(max_price)) / 2
+                    avg_rate = (float(min_price) + float(max_price)) / 2
                     avg_weight = (float(min_weight) + float(max_weight)) / 2
+                    # calculate_rate_per_unit() below derives $/lb from
+                    # (total price / size) - so product_price has to be the
+                    # *total* price for an average-weight package, not the
+                    # bare rate, or the rate gets divided by weight twice.
+                    product_price = avg_rate * avg_weight
                     product_size = f"{avg_weight} lb"
                 else:
                     product_price = product['data']['prices'][store]['value']
