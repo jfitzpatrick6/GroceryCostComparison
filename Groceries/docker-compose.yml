@@ -48,39 +48,25 @@ services:
     networks:
       - my_network
 
-  # Tailscale sidecar (see #34) - webapp joins this container's network
-  # namespace below, so it's reachable at whatever tailnet address this
-  # gets, not the public internet or LAN presence. Needs TS_AUTHKEY in
-  # .env (generate one at https://login.tailscale.com/admin/settings/keys).
-  # NOT verified end-to-end from this environment - no Tailscale account
-  # available here. This is the standard documented sidecar pattern, but
-  # confirm the container actually appears in your tailnet before relying
-  # on it. ports: below is a local/LAN fallback for testing independent of
-  # Tailscale auth succeeding.
-  tailscale:
-    image: tailscale/tailscale:latest
-    hostname: grocery-webapp
-    environment:
-      - TS_AUTHKEY=${TS_AUTHKEY:-}
-      - TS_STATE_DIR=/var/lib/tailscale
-    volumes:
-      - tailscale_state:/var/lib/tailscale
-      - /dev/net/tun:/dev/net/tun
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    ports:
-      - "5000:5000"
-    restart: unless-stopped
-    networks:
-      - my_network
-
+  # Reachable over LAN and, since the host itself is Tailscale-joined, over
+  # the tailnet too via the host's own tailscale0 interface - no sidecar
+  # container needed. This replaces an earlier Tailscale-sidecar-in-Docker
+  # approach (a separate container joining the tailnet as its own node,
+  # needing its own TS_AUTHKEY) that was never actually verified end-to-end
+  # and added a failure mode (an unauthenticated sidecar loops on auth
+  # retries, restarting and dropping the network namespace any container
+  # sharing it depends on). If this ever needs to run somewhere the host
+  # itself isn't already on the tailnet, reintroduce a sidecar (or a
+  # `tailscale serve`/funnel setup) rather than publishing the port as
+  # below.
   webapp:
     build: ./webapp
     depends_on:
       - db
-      - tailscale
-    network_mode: service:tailscale
+    ports:
+      - "5000:5000"
+    networks:
+      - my_network
     env_file:
       - ../.env
     environment:
@@ -95,4 +81,3 @@ networks:
 
 volumes:
   db_data:
-  tailscale_state:

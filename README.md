@@ -28,16 +28,14 @@ TOPS_STORE=
 ALDIS_STORE=
 BJS_STORE=1234
 WALMARTSTORE=1234
-TS_AUTHKEY=
 USDA_API_KEY=
 ```
 
 - `TOPS_STORE` / `ALDIS_STORE` can be left blank for now - they're not used yet (see the table above and #43).
 - `BJS_STORE` / `WALMARTSTORE` need real store ids for those chains. BJs' id shows up in that chain's own site network requests; Walmart's scraper doesn't currently work regardless of what's set here (see above).
-- `TS_AUTHKEY` is for the webapp's Tailscale sidecar (see below) - generate one at https://login.tailscale.com/admin/settings/keys. Can be left blank if you're not running the webapp yet.
 - `USDA_API_KEY` is for the webapp's recipe-ingredient unit conversion ("2 cups flour" -> a purchase-unit estimate) - get a free key at https://fdc.nal.usda.gov/api-key-signup. Optional; that one feature just won't produce estimates without it.
 
-**Do not commit a filled-in `.env`.** Store ids are location-identifying, and an exposed `TS_AUTHKEY` could let someone else join your tailnet. `.env` is already gitignored - keep it that way.
+**Do not commit a filled-in `.env`.** Store ids are location-identifying. `.env` is already gitignored - keep it that way.
 
 ## Running a scrape
 
@@ -62,7 +60,7 @@ It's a long-running container (`restart: unless-stopped`), unlike `grocery_scrap
 
 ```
 cd Groceries
-docker compose up --build db tailscale webapp
+docker compose up --build db webapp
 ```
 
 This is a small Flask app (`Groceries/webapp/`):
@@ -81,7 +79,7 @@ This is a small Flask app (`Groceries/webapp/`):
 
 More pages/features land as the corresponding GitHub issues get done.
 
-It's meant to be reachable only over [Tailscale](https://tailscale.com/), not the public internet or LAN - the `tailscale` service is a sidecar container the webapp shares its network namespace with, so it shows up on your tailnet once `TS_AUTHKEY` is set and it authenticates. **This part is configured but not verified end-to-end** - it was built and tested without a real Tailscale account available, so confirm the container actually appears in your tailnet (`https://login.tailscale.com/admin/machines`) rather than assuming it works. Without a valid `TS_AUTHKEY`, the sidecar will sit in an auth-retry loop and periodically restart, which breaks the webapp's networking each time (`docker compose restart webapp` recovers it, but a real auth key is the actual fix).
+It listens on `0.0.0.0:5000` - reachable over your LAN, and over [Tailscale](https://tailscale.com/) too if the host machine itself is already joined to your tailnet (no sidecar container or `TS_AUTHKEY` needed - the host's own tailscale0 interface covers it). Not meant for the public internet; put it behind your own reverse proxy/auth if you need that. An earlier version of this ran Tailscale as a Docker sidecar with its own tailnet identity, but that added a real failure mode (an unauthenticated sidecar loops on auth retries and restarts, dropping the webapp's network namespace each time it shared one) for no benefit on a host that's already on the tailnet - removed in favor of the simpler setup above.
 
 ## What gets written
 
