@@ -37,35 +37,39 @@ def _timed_scrape(store_name, scrape_fn, store_id):
 
 
 def get_data():
-    """Calls all of the main functions for each scrape, and returns a single DataFrame."""
+    """Calls all of the main functions for each scrape, and returns a single DataFrame.
+
+    Each store is scraped independently - one store's scraper throwing (e.g.
+    Walmart's bot wall, see #12) shouldn't discard the other stores' results
+    for the run."""
     missing = [name for name in REQUIRED_STORE_ENV if not os.getenv(name)]
     if missing:
         raise RuntimeError(f"Missing required store id env var(s): {', '.join(missing)}")
 
-    tops_store = os.getenv("TOPS_STORE")
-    aldi_store = os.getenv("ALDIS_STORE")
-    bjs_store = os.getenv("BJS_STORE")
-    walmart_store = os.getenv("WALMARTSTORE")
+    stores = [
+        ("Aldis", aldis.main, os.getenv("ALDIS_STORE")),
+        ("Tops", tops.main, os.getenv("TOPS_STORE")),
+        ("BJs", BJs.main, os.getenv("BJS_STORE")),
+        ("Walmart", Walmart.main, os.getenv("WALMARTSTORE")),
+    ]
 
     run_start = time.monotonic()
 
-    aldi = _timed_scrape("Aldis", aldis.main, aldi_store)
-    aldi['store'] = 'Aldis'
-    aldi['store_id'] = aldi_store
+    frames = []
+    for store_name, scrape_fn, store_id in stores:
+        try:
+            df = _timed_scrape(store_name, scrape_fn, store_id)
+        except Exception as e:
+            print(f"[{store_name}] scrape failed, skipping this store: {e}")
+            continue
+        df['store'] = store_name
+        df['store_id'] = store_id
+        frames.append(df)
 
-    top = _timed_scrape("Tops", tops.main, tops_store)
-    top['store'] = 'Tops'
-    top['store_id'] = tops_store
+    if not frames:
+        raise RuntimeError("Every store's scraper failed - nothing to store.")
 
-    BJ = _timed_scrape("BJs", BJs.main, bjs_store)
-    BJ['store'] = 'BJs'
-    BJ['store_id'] = bjs_store
-
-    Wal = _timed_scrape("Walmart", Walmart.main, walmart_store)
-    Wal['store'] = 'Walmart'
-    Wal['store_id'] = walmart_store
-
-    total_df = pd.concat([aldi, top, BJ, Wal], ignore_index=True)
+    total_df = pd.concat(frames, ignore_index=True)
     total_df.dropna(how="all", inplace=True)
     total_df['Datetime'] = pd.Timestamp.now()
 
@@ -116,6 +120,12 @@ def store_data(df):
                 # NUMERIC (only matters for a table created before this).
                 cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit_price NUMERIC;")
                 cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit TEXT;")
+                # Postgres refuses ALTER COLUMN TYPE on a column any view
+                # depends on, even for a no-op cast (see #53) - drop the
+                # view first since it gets unconditionally recreated right
+                # after anyway, so every scrape after the first one doesn't
+                # hard-fail here.
+                cur.execute("DROP VIEW IF EXISTS grocery_prices_latest;")
                 cur.execute("ALTER TABLE grocery_prices ALTER COLUMN price TYPE NUMERIC USING price::numeric;")
                 # Cheap way to get "latest scrape only" per product/store
                 # without every consumer re-deriving it (see #11).
