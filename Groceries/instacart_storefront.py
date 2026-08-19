@@ -168,12 +168,43 @@ def get_items(context, host, shop_id, zone_id, postal_code, item_ids):
 
 def _parse_item(item, calculate_rate_per_unit):
     name = item.get("name")
-    size = item.get("size") or "N/A"
     price_view = (item.get("price") or {}).get("viewSection") or {}
     price_str = price_view.get("priceValueString")
     if not name or not price_str:
         return None
     price = float(price_str)
+
+    # Weight-variable items (fresh meat/poultry) don't reliably carry a
+    # correct top-level `size` field - verified against live data (see #54):
+    # a "TOPS Whole Fryer Chicken" priced $14.99 came back with
+    # size="48.5 lb" ($0.31/lb) when the item is really a ~6 lb chicken
+    # ($2.49/lb per Instacart's own displayed rate); a "TOPS B Boneless
+    # Chicken Thigh" priced directly at $3.79/lb came back with
+    # size="36 lb" ($0.105/lb) despite there being no 36 lb package at
+    # all - it's sold by the pound with a customer-adjustable quantity.
+    # `size` for these appears to be bogus/unrelated data, not a rate or
+    # a package weight. The correct data instead lives on
+    # `quantityAttributes`, which mirrors what Instacart's own site shows
+    # a shopper:
+    #   - quantityType == "weight": the item is priced directly *per
+    #     pound* (item card shows e.g. "$3.79 /lb") - price already IS
+    #     the $/lb rate, no size lookup needed.
+    #   - parWeight present: an "each"-sold item (whole chicken, sausage
+    #     links/patties) whose price is a total for Instacart's own
+    #     average-weight estimate (parWeight.quantity, in lb) - that
+    #     estimate is the real per-package weight, not whatever `size`
+    #     says.
+    #   - neither: a normal fixed-size item (e.g. "19 oz" packaged
+    #     sausage) - `size` is fine as before.
+    quantity_attrs = item.get("quantityAttributes") or {}
+    par_weight = (quantity_attrs.get("parWeight") or {}).get("quantity")
+    if quantity_attrs.get("quantityType") == "weight":
+        size = "1 lb"
+    elif par_weight:
+        size = f"{par_weight} lb"
+    else:
+        size = item.get("size") or "N/A"
+
     rate = calculate_rate_per_unit(price, size) if size != "N/A" else "N/A"
     return {"Product": [name], "Price": [price], "Rate": [rate], "Size": [size]}
 
