@@ -2,7 +2,8 @@ services:
   grocery_scraper:
     build: .
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     env_file:
       - ../.env
     environment:
@@ -23,7 +24,8 @@ services:
   scraper_scheduler:
     build: .
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     env_file:
       - ../.env
     environment:
@@ -47,6 +49,18 @@ services:
       - db_data:/var/lib/postgresql/data
     networks:
       - my_network
+    # Without this, `depends_on` only waits for the container to *start*, not for
+    # Postgres to accept connections - so a webapp restart during db startup
+    # served 500s until the database came up (#71). pg_isready is the canonical
+    # probe and ships in the postgres image.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d grocery_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Recovery from an unclean shutdown replays WAL before accepting
+      # connections, which on a large grocery_prices can outlast a few intervals.
+      start_period: 30s
 
   # Reachable over LAN and, since the host itself is Tailscale-joined, over
   # the tailnet too via the host's own tailscale0 interface - no sidecar
@@ -62,7 +76,12 @@ services:
   webapp:
     build: ./webapp
     depends_on:
-      - db
+      db:
+        # Waits for Postgres to accept connections, not merely for the container
+        # to exist (#71). init_schema.py also retries on its own, so this is
+        # belt-and-braces rather than the only thing standing between a restart
+        # and a wall of 500s.
+        condition: service_healthy
     ports:
       - "5000:5000"
     networks:
@@ -75,6 +94,30 @@ services:
       - DB_USER=user
       - DB_PASS=password
     restart: unless-stopped
+    # `restart: unless-stopped` only acts when the container *exits*. A process
+    # that is hung but alive - which /planner/ingredients can be, since it makes
+    # synchronous USDA calls on the request path (#64) - looks fine to Docker
+    # forever without this (#71).
+    #
+    # Probes /healthz with the image's own interpreter: python:3.12-slim ships no
+    # curl and no wget, so the usual `curl -f` healthcheck would fail on a
+    # perfectly healthy container. urlopen raises HTTPError on a non-2xx
+    # response, which exits non-zero - and Docker keys off the exit code, not the
+    # HTTP status, so /healthz's 503-vs-500 distinction is for humans and
+    # proxies rather than for this.
+    #
+    # start_period has to cover init_schema.py's retry budget (30 tries x 2s by
+    # default, plus a 5s connect timeout) or a slow database start counts as a
+    # failed healthcheck and Docker marks a container unhealthy that is still
+    # legitimately initializing.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
 
 networks:
   my_network:

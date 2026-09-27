@@ -11,6 +11,24 @@ COPY . .
 # confusing way to discover it.
 RUN chmod 0755 /app/docker-entrypoint.sh
 
+# Run as an unprivileged user (#71). The webapp is the network-facing piece -
+# port 5000 is published on every interface - so removing root from the blast
+# radius of any code-execution bug is worth two lines. Binding 5000 works
+# because it is above 1024, and /app is root-owned but world-readable, which is
+# all gunicorn needs to import from it.
+#
+# PYTHONDONTWRITEBYTECODE because /app is not writable by this user, so Python
+# would otherwise attempt and fail to write __pycache__ on every import. It
+# degrades gracefully, but saying so beats leaving a silent failed write.
+#
+# The scraper image is deliberately left as root and is not changed here: its
+# cron job installs into /etc/cron.d and Playwright's Chromium install both
+# assume it. The honest alternative is dropping cron for a sleep loop in the
+# entrypoint, which is a separate change with its own verification.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
+ENV PYTHONDONTWRITEBYTECODE=1
+USER appuser
+
 # docker-entrypoint.sh runs init_schema.py once and then `exec gunicorn ...`.
 # Both halves matter and the reasoning for each lives in that script, beside the
 # flags: schema creation has to happen before any worker exists (two workers

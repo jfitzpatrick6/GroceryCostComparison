@@ -98,6 +98,12 @@ Written 2026-09-27. The tracker moves; check the issues.
   whatever the host's network location IP-geolocates to.
 - `grocery_prices` has **no indexes and no retention policy**, and the
   `grocery_prices_latest` view full-sorts the whole table on every query.
-- The webapp runs on the **Flask development server**, has **no auth or CSRF
-  protection**, **no error handlers**, **no flash messaging**, and **no backups**.
-- `app.py` (~1,800 lines of routes and domain logic) has **no test coverage**.
+- The webapp is served by **gunicorn** behind a Docker `HEALTHCHECK` on
+  `/healthz`, runs as a **non-root** user, and creates its own schema once at
+  startup via `init_schema.py` (#61, #71, #82). It still has **no auth or CSRF
+  protection**, **no error handlers**, **no flash messaging**, and **no
+  backups**.
+- `app.py` (~1,900 lines of routes and domain logic) is **mostly untested**.
+  `test_app_health.py` and `test_app_schema.py` cover the health probe and
+  schema-creation ordering; the routes, planner math, pantry depletion and
+  package-fit costing are not covered (#70).
