@@ -1,0 +1,21 @@
+# Build context for the webapp image (docker-compose `build: ./webapp`).
+
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Never bake config into an image - USDA_API_KEY and friends are injected at
+# runtime via docker-compose `env_file`.
+.env
+.env.*
+
+Dockerfile
+.dockerignore
+
+# test_*.py is deliberately NOT excluded. It is ~30KB, and keeping it means the
+# logic shipped in a deployed container can be verified in place against that
+# exact image. pytest itself is not installed here - add it to a throwaway
+# container or a venv if you want to run the suite.

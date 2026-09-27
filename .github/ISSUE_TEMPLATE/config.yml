@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Repo standards
+    url: https://github.com/jfitzpatrick6/GroceryCostComparison/blob/master/CONTRIBUTING.md
+    about: How work is tracked, branched, committed, reviewed, and verified. Read before opening an issue or PR.
+  - name: Usage / how do I run this
+    url: https://github.com/jfitzpatrick6/GroceryCostComparison/blob/master/README.md
+    about: Running a scrape, starting the scheduler, and what each webapp page does.

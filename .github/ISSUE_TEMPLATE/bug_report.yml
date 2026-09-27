@@ -1,0 +1,55 @@
+name: Bug report
+description: Something behaves wrongly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A good bug report names the **concrete observed symptom**, not a theory
+        about the cause. The best ones in this repo's history read like
+        *"a 4.5–6.5 lb chicken breast pack priced '$2.19-2.69' is obviously
+        $/lb, not a total package price"* — that single sentence made the fix
+        obvious.
+
+        **Never paste a store ID or any `.env` value here.** They are
+        location-identifying.
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happens
+      description: Include the exact output, price, page, or ingredient. Screenshots welcome for UI issues.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The specific recipe, list item, page, or scrape that triggers it. "Sometimes" is fine if that's the truth — say what varies.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where
+      options:
+        - webapp
+        - scraper - Tops
+        - scraper - Aldi
+        - scraper - BJs
+        - scraper - Walmart
+        - scraper - collector/scheduling
+        - docker/deployment
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence gathered so far
+      description: Optional. Logs, a database query result, the code path you suspect. Mark clearly whether you verified it or are guessing.
