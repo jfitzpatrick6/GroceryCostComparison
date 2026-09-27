@@ -29,8 +29,16 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "grocery-cost-comparison-dev-key")
 
 
-def get_connection():
-    return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+def get_connection(connect_timeout=None):
+    # connect_timeout defaults to None, i.e. libpq's own default, so the 36
+    # existing callers are unaffected. init_schema.py passes one because at
+    # container startup a black-holed DB_HOST would otherwise block libpq
+    # indefinitely, its retry loop would never advance, and the container would
+    # sit "Up" having created nothing (#82).
+    extra = {} if connect_timeout is None else {"connect_timeout": connect_timeout}
+    return psycopg2.connect(
+        host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS, **extra
+    )
 
 
 def price_data_available(cur):
@@ -1924,6 +1932,54 @@ def add_week_to_list():
     finally:
         conn.close()
     return redirect(url_for("grocery_list"))
+
+
+def ensure_app_schema(cur):
+    """Creates every table this app owns, in dependency order, in one call (#82).
+
+    Three routes - GET /recipes/<id>, GET /recipes/<id>/edit and POST
+    /recipes/<id>/delete - query `recipes` while calling no ensure_* function at
+    all, so on a fresh database they 500 with UndefinedTable. They only ever
+    worked because some other route happened to be visited first. That is the
+    same root cause as #80: schema creation is scattered through request
+    handlers, so "does this table exist yet" is a property of navigation history
+    rather than of the deployment.
+
+    Called once at container startup by init_schema.py, before gunicorn serves
+    anything - deliberately not from a request hook. With two workers, a
+    per-worker first-request hook would race two concurrent CREATE TABLE IF NOT
+    EXISTS calls against an empty database, and that is not atomic in Postgres:
+    it was observed during #61's concurrency testing as DuplicateTable and
+    UniqueViolation on pg_class_relname_nsp_index.
+
+    This does NOT remove the per-request ensure_* calls; #66 does that. Once
+    this has run they become semantic no-ops, but they still take ACCESS
+    EXCLUSIVE locks on every request - the cost #66 exists to eliminate. Landing
+    it in that order keeps this change small enough to review and leaves #66 a
+    pure deletion.
+
+    Order matters: meal_plan_slots.recipe_id REFERENCES recipes(id), so
+    ensure_recipes_tables runs before ensure_planner_table. The rest have no
+    cross-function dependencies - app.py has exactly two REFERENCES clauses and
+    the other one (recipe_ingredients) is satisfied inside
+    ensure_recipes_tables itself. The leading ensure_recipes_tables is
+    belt-and-braces given #80 made ensure_planner_table call it too; it is
+    idempotent, and having the dependency visible here rather than implicit in
+    another function's body is worth one redundant call.
+
+    test_app_schema.py asserts the tables this creates cover every table any
+    route in this file queries, so the next route added against a table nobody
+    creates fails in CI instead of on someone's first deploy.
+    """
+    ensure_recipes_tables(cur)
+    ensure_planner_table(cur)
+    ensure_planner_extras_table(cur)
+    ensure_cook_depletions_table(cur)
+    ensure_profiles_table(cur)
+    ensure_staples_table(cur)
+    ensure_list_table(cur)
+    ensure_pantry_table(cur)
+    ensure_ingredient_conversions_table(cur)
 
 
 if __name__ == "__main__":

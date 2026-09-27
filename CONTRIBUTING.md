@@ -221,18 +221,42 @@ utility module for a one-time operation.
 
 **The current state is known-bad and is being fixed — do not make it worse.**
 
-Today, schema is created by ad-hoc `CREATE TABLE IF NOT EXISTS` and
-`ALTER TABLE` calls scattered across nine `ensure_*_table()` functions and
-roughly 37 call sites (counts as of #77 — grep `ensure_` to recheck rather than
-trusting a number in a document). They execute on nearly every request. One of
-them (`inject_profile_switcher`) is a Flask `@app.context_processor`, so *every
-page render* runs DDL and a `COMMIT`. DDL takes `ACCESS EXCLUSIVE` locks, and
-one path drops and re-adds a constraint on `meal_plan_slots` implicitly.
+The webapp's own tables are now created **once at container startup** by
+`init_schema.py`, which calls `ensure_app_schema()` before gunicorn serves
+anything (#82). That is the correct place, and it fixed a real first-deploy
+failure: schema creation used to be scattered through request handlers, so
+whether a table existed depended on which URL someone opened first — three
+recipe routes 500'd on an empty database because they provisioned nothing.
+
+What has *not* been removed yet is the legacy behaviour underneath: ad-hoc
+`CREATE TABLE IF NOT EXISTS` and `ALTER TABLE` calls still sit in nine
+`ensure_*_table()` functions at roughly 32 call sites inside route handlers (47
+occurrences of `ensure_` in total, including the nine definitions — grep to
+recheck rather than trusting a number in a document), and they still execute on
+nearly every request. They are now semantic no-ops, but **not free**: measured on
+postgres:16 by holding a transaction open and reading `pg_locks` from another
+session, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes an
+**`AccessExclusiveLock`** on the relation *even when the column already exists
+and nothing changes*. `CREATE TABLE IF NOT EXISTS` against an existing table
+takes **no lock at all** (Postgres notices and skips it), so the cost is the
+`ALTER`s, not the `CREATE`s — app.py has about ten of them. One call site
+(`inject_profile_switcher`) is a Flask `@app.context_processor`, so *every page
+render* runs DDL and a `COMMIT`, and one path drops and re-adds a constraint on
+`meal_plan_slots` implicitly. Removing those call sites is #66.
 
 Rules while that stands:
 
-- **Never add a new `ensure_*_table()` call site.** If you need a schema change,
-  say so in the PR and coordinate it with the migrations issue.
+- **Never add a new `ensure_*_table()` call site in a request handler.** If you
+  need a schema change, say so in the PR and coordinate it with the migrations
+  issue (#66). (`ensure_app_schema()` calling the nine helpers is the sanctioned
+  exception — that's the one ordered place schema is declared, not a request
+  handler. The rule below is what that means in practice.)
+- **A new table goes in `ensure_app_schema()`**, not in a route. That function is
+  the single ordered place the webapp's schema is declared, and
+  `test_app_schema.py` asserts every table any route queries is either created
+  there or explicitly listed as owned by something else — so a route added
+  against a table nobody creates fails in CI instead of 500ing on the next fresh
+  deploy. Add the table to that test's `EXPECTED_TABLES` too.
 - **Never write a destructive migration** (`DROP COLUMN`, `DROP CONSTRAINT`,
   `ALTER TYPE`) as an implicit side effect of a request handler.
 - Schema for scraped prices is owned by `collector.py`; app tables are owned by

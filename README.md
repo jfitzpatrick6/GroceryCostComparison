@@ -84,6 +84,14 @@ It listens on `0.0.0.0:5000` - reachable over your LAN, and over [Tailscale](htt
 
 The container serves through **gunicorn** (2 workers x 4 threads), not Flask's development server - see `Groceries/webapp/Dockerfile` for the flags and the reasoning behind each. For local development without Docker, `python app.py` still works and still uses Flask's built-in server; that path is for iterating on templates, not for running the household's instance.
 
+On startup the container runs `init_schema.py` once, before gunicorn serves anything, to create the tables the webapp owns (#82). It retries while Postgres is still coming up, and exits loudly if schema creation fails, so a container that is up is a container whose schema exists. It's idempotent - safe to re-run by hand against an existing database:
+
+```
+docker compose exec webapp python init_schema.py
+```
+
+The tables the *scraper* owns (`grocery_prices` and its `grocery_prices_latest` view) are created by `collector.py` on the first scrape, not here; pages that need them degrade gracefully until then.
+
 ## What gets written
 
 Everything lands in a single `grocery_prices` table in the `grocery_db` Postgres database (default credentials are in `Groceries/docker-compose.yml` - fine for a local/home-server Postgres instance not exposed elsewhere, change them if that's not your situation):

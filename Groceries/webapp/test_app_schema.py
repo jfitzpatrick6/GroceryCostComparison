@@ -1,28 +1,43 @@
-"""Schema-creation ordering tests for app.py's ensure_*_table() functions (#80).
+"""Schema-creation tests for app.py's ensure_*_table() functions (#80, #82).
 
-The bug this guards: meal_plan_slots declares `recipe_id REFERENCES recipes(id)`,
-but it is created by ensure_planner_table(), which on a fresh database ran before
-anything created `recipes`. The CREATE failed with UndefinedTable, the
-transaction aborted and rolled back the `recipes` table created moments later in
-that same transaction, and every subsequent request repeated the identical
-failure - so a first-time deploy had a permanently broken /planner, /history and
-seven other routes. It went unnoticed because the dev database had been populated
-for weeks.
+Two related bugs, same root cause - schema creation scattered through request
+handlers, so "does this table exist yet" depended on which URL was opened first:
+
+#80 was an ordering bug. meal_plan_slots declares
+`recipe_id REFERENCES recipes(id)`, but it is created by ensure_planner_table(),
+which on a fresh database ran before anything created `recipes`. The CREATE
+failed with UndefinedTable, the transaction aborted and rolled back the `recipes`
+table created moments later in that same transaction, and every subsequent
+request repeated the identical failure - so a first-time deploy had a permanently
+broken /planner, /history and seven other routes.
+
+#82 was an absence bug. Three routes - GET /recipes/<id>, GET /recipes/<id>/edit
+and POST /recipes/<id>/delete - query `recipes` while calling no ensure_*
+function at all, so they 500'd on a fresh database and worked only because some
+other route had been visited first. Fixed by ensure_app_schema(), which
+init_schema.py runs once at container startup.
+
+Both went unnoticed because the dev database had been populated for weeks.
 
 Why a fake cursor rather than a real Postgres: CONTRIBUTING §7 requires the CI
 tier to pass without a database, and CI has none. So this emulates the one piece
-of DDL semantics the bug depends on - a CREATE TABLE whose REFERENCES target does
-not exist yet fails, and an ALTER TABLE on a nonexistent table fails - and nothing
-else. It is not a Postgres simulator and does not try to be.
+of DDL semantics the bugs depended on - a CREATE TABLE whose REFERENCES target
+does not exist yet fails, and an ALTER TABLE on a nonexistent table fails - and
+nothing else. It is not a Postgres simulator and does not try to be; in
+particular it models no transactions, so the rollback that made #80 *permanent*
+is not covered here. That was verified against a real empty postgres:16 instead,
+per the PR description.
 
 That makes test_the_harness_rejects_a_missing_fk_target load-bearing rather than
 decorative: if the fake ever stops enforcing the dependency, every other test
 here would pass vacuously and this suite would silently stop protecting anything.
 """
 
+import ast
 import inspect
 import re
 import unittest
+from typing import ClassVar
 
 from psycopg2 import errors
 
@@ -31,6 +46,81 @@ import app
 _CREATE_TABLE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", re.IGNORECASE)
 _REFERENCES = re.compile(r"REFERENCES\s+(\w+)", re.IGNORECASE)
 _ALTER_TABLE = re.compile(r"ALTER\s+TABLE\s+(\w+)", re.IGNORECASE)
+# Table names app.py reads or writes. Used by the "does anything create this?"
+# invariant test below; deliberately matches the four keywords that introduce a
+# table name in this codebase's SQL rather than trying to be a SQL parser.
+_SQL_TABLE = re.compile(r"\b(?:FROM|INTO|UPDATE|JOIN)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
+# Words that can legitimately follow FROM/INTO/UPDATE/JOIN in real SQL without
+# being a table name. Kept minimal and explicit on purpose: the point of the
+# invariant test is to notice a table nobody creates, so silently swallowing
+# names would defeat it. `set` is the only one this codebase produces today,
+# from `ON CONFLICT ... DO UPDATE SET`.
+_SQL_KEYWORDS = {"set"}
+
+
+def _docstring_constants(tree):
+    """The AST nodes that are docstrings, so they can be excluded from the scan.
+
+    A docstring is not SQL, but it can quote SQL - ensure_app_schema's mentions
+    "CREATE TABLE IF NOT EXISTS" in prose, which made it look like a statement,
+    and the phrase "not from a request hook" in that same docstring then
+    contributed a table named "a". Excluding docstrings removes that whole class
+    of false positive instead of playing whack-a-mole with stopwords.
+    """
+    nodes = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.body:
+            continue
+        first = node.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            nodes.add(id(first.value))
+    return nodes
+
+
+def _tables_in_source(source):
+    """The extraction half of _referenced_tables, split out so it can be tested
+    against fabricated source rather than only against app.py.
+
+    Scans every non-docstring string constant, with deliberately no "does this
+    literal look like a SQL statement" gate. An earlier version required the
+    literal to contain SELECT/INSERT/UPDATE/..., which silently skipped any
+    fragment carrying only the table half of a query - the exact blind spot this
+    suite exists to close. Measured on app.py, dropping the gate yields the
+    identical 12 names with no new noise, because comments are not AST string
+    constants and docstrings are excluded separately. (Scanning the *raw file*
+    instead of the AST is what produced eighteen bogus names out of English prose
+    like "from the" and "into a"; the AST is what makes the gate unnecessary.)
+    """
+    tree = ast.parse(source)
+    docstrings = _docstring_constants(tree)
+    found = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if id(node) in docstrings:
+            continue
+        found.update(m.lower() for m in _SQL_TABLE.findall(node.value))
+    # `SET` is captured by the UPDATE branch on `ON CONFLICT ... DO UPDATE SET`,
+    # which is valid SQL and not a table. Keywords are the only legitimate
+    # capture left once prose is excluded, so this list stays short and explicit.
+    return found - _SQL_KEYWORDS
+
+
+def _referenced_tables(module):
+    """Table names read or written by SQL in `module`'s string literals.
+
+    Scans AST string constants that look like SQL, not the raw source, and skips
+    docstrings. Matching the raw file also picked up ordinary English prose in
+    comments - "from the", "into a", "update the" - which yielded eighteen bogus
+    table names and made the invariant test useless.
+    """
+    return _tables_in_source(inspect.getsource(module))
 
 
 class _SchemaTrackingCursor:
@@ -73,11 +163,12 @@ class _SchemaTrackingCursor:
 
 
 def _ensure_functions():
-    """Every ensure_*_table function in app.py, discovered rather than listed.
+    """Every ensure_* schema helper in app.py, discovered rather than listed.
 
     Listing them by hand is how a tenth function gets added with an unsatisfied
-    dependency and no test notices. Filtering on the (cur) signature keeps this
-    from picking up anything that isn't one of these schema helpers.
+    dependency and no test notices. Filtering on the `(cur)` signature keeps this
+    to the schema helpers - which since #82 includes ensure_app_schema itself, so
+    the aggregate is exercised by the same loops as its parts.
     """
     found = []
     for name, obj in vars(app).items():
@@ -174,6 +265,205 @@ class SchemaCreationOrderTests(unittest.TestCase):
         app.ensure_cook_depletions_table(cur)
         for table in ("recipes", "recipe_ingredients", "meal_plan_slots", "meal_plan_extras", "cook_depletions"):
             self.assertIn(table, cur.tables)
+
+
+class EnsureAppSchemaTests(unittest.TestCase):
+    """#82: the whole app-owned schema must be creatable in one call, from nothing.
+
+    Three routes (GET /recipes/<id>, GET /recipes/<id>/edit, POST
+    /recipes/<id>/delete) query `recipes` while calling no ensure_* function at
+    all, so they 500'd on a fresh database and worked only because some other
+    route had been visited first. init_schema.py now calls ensure_app_schema()
+    once at container startup, so navigation order no longer decides whether a
+    table exists.
+    """
+
+    # Tables app.py may query that this app does not own and must not create.
+    # ClassVar because these are shared constants, not per-instance mutable
+    # state - which is what ruff's RUF012 is protecting against.
+    NOT_APP_OWNED: ClassVar[set] = {
+        # A view collector.py creates on the first scrape. Routes guard access
+        # with price_data_available() precisely because the webapp doesn't own
+        # this schema and it may not exist yet.
+        "grocery_prices_latest",
+        "grocery_prices",
+        # Postgres system catalogs, queried by the DO block in
+        # ensure_planner_table and by price_data_available().
+        "pg_constraint",
+        "pg_class",
+    }
+
+    EXPECTED_TABLES: ClassVar[set] = {
+        "recipes",
+        "recipe_ingredients",
+        "meal_plan_slots",
+        "meal_plan_extras",
+        "cook_depletions",
+        "profiles",
+        "staples",
+        "grocery_list_items",
+        "pantry_items",
+        "ingredient_conversions",
+    }
+
+    def test_creates_every_app_owned_table_from_empty(self):
+        cur = _SchemaTrackingCursor()
+        app.ensure_app_schema(cur)
+        self.assertEqual(set(cur.tables), self.EXPECTED_TABLES)
+
+    def test_recipes_exists_before_the_table_that_references_it(self):
+        cur = _SchemaTrackingCursor()
+        app.ensure_app_schema(cur)
+        self.assertLess(cur.tables.index("recipes"), cur.tables.index("meal_plan_slots"))
+
+    def test_is_idempotent(self):
+        # init_schema.py is documented as safe to re-run by hand, and the
+        # container will restart against an already-populated database.
+        cur = _SchemaTrackingCursor()
+        app.ensure_app_schema(cur)
+        first = list(cur.tables)
+        app.ensure_app_schema(cur)
+        self.assertEqual(cur.tables, first)
+
+    def test_every_table_any_route_queries_is_created_or_explicitly_not_ours(self):
+        """The invariant that would have caught #82 in CI.
+
+        Extracts every table name appearing after FROM/INTO/UPDATE/JOIN in
+        app.py's source and asserts each is either created by
+        ensure_app_schema() or listed in NOT_APP_OWNED. Without this, the next
+        route written against a table nobody creates passes review, passes CI,
+        and 500s on someone's first deploy - which is exactly how #82 happened.
+
+        Deliberately source-level rather than request-level: it needs no
+        database, so it runs in the required CI tier, and it covers routes that
+        are awkward to drive with a test client (a DELETE needing a valid id, a
+        branch behind a form post).
+        """
+        source_tables = _referenced_tables(app)
+        self.assertTrue(source_tables, "found no table references - the extraction has stopped matching")
+
+        cur = _SchemaTrackingCursor()
+        app.ensure_app_schema(cur)
+        created = set(cur.tables)
+
+        unaccounted = source_tables - created - self.NOT_APP_OWNED
+        self.assertEqual(
+            unaccounted,
+            set(),
+            "these tables are queried by app.py but created by nothing: "
+            f"{sorted(unaccounted)}. Add them to ensure_app_schema(), or to "
+            "NOT_APP_OWNED with a comment saying whose they are.",
+        )
+
+    def test_the_routes_that_broke_get_their_dependency(self):
+        # Named explicitly so the link to #82 stays visible: these are the three
+        # routes that 500'd, and `recipes` is what all of them need.
+        cur = _SchemaTrackingCursor()
+        app.ensure_app_schema(cur)
+        self.assertIn("recipes", cur.tables)
+        self.assertIn("recipe_ingredients", cur.tables)
+
+    def test_the_invariant_arithmetic_has_teeth(self):
+        # Guards the guard. An earlier version of this test just asserted that a
+        # made-up name wasn't in two sets, which is trivially true and proved
+        # nothing. This instead runs the same set arithmetic the real invariant
+        # uses, on a referenced-set that includes a table nothing creates, and
+        # asserts it is reported. If this ever passes while the invariant test
+        # has gone vacuous, the invariant is not protecting anything.
+        cur = _SchemaTrackingCursor()
+        app.ensure_app_schema(cur)
+        created = set(cur.tables)
+        fabricated = created | {"a_table_nothing_creates"}
+        self.assertEqual(fabricated - created - self.NOT_APP_OWNED, {"a_table_nothing_creates"})
+
+    def test_table_extraction_finds_real_sql_and_ignores_prose(self):
+        # The invariant is only as good as the extraction feeding it, so test
+        # the extraction directly against source written for the purpose rather
+        # than only against app.py (where a silent failure would just look like
+        # everything being fine).
+        source = '''
+def a_route(cur):
+    """Docstrings quote SQL: SELECT * FROM not_a_real_table."""
+    cur.execute("SELECT id FROM widgets WHERE x = %s", (1,))
+    cur.execute("INSERT INTO gadgets (a) VALUES (%s)", (1,))
+    cur.execute("UPDATE doohickeys SET a = 1")
+    cur.execute("DELETE FROM thingamajigs WHERE id = %s", (1,))
+    cur.execute("SELECT 1 FROM inventory i JOIN stock s ON s.id = i.id")
+    cur.execute("INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET b = 2")
+    # a comment mentioning FROM prose_tables is not SQL and must be ignored
+'''
+        self.assertEqual(
+            _tables_in_source(source),
+            {"widgets", "gadgets", "doohickeys", "thingamajigs", "inventory", "stock", "t"},
+        )
+
+
+    def test_not_app_owned_does_not_overlap_what_we_create(self):
+        # NOT_APP_OWNED is how the invariant test above is allowed to excuse a
+        # table. Nothing stops someone silencing a failure by moving a real
+        # app-owned table into that set, so assert the two are disjoint.
+        cur = _SchemaTrackingCursor()
+        app.ensure_app_schema(cur)
+        self.assertEqual(
+            self.NOT_APP_OWNED & set(cur.tables),
+            set(),
+            "NOT_APP_OWNED must not contain a table ensure_app_schema creates - "
+            "that would let the invariant be satisfied by excusing our own schema",
+        )
+
+    def test_no_execute_builds_sql_by_concatenation_or_percent_formatting(self):
+        """Closes the residual blind spot in the extractor, with teeth.
+
+        _tables_in_source walks every string constant in the module, so it sees
+        f-strings too (their literal pieces are Constant children) and it sees a
+        literal assigned to a variable and later passed as `cur.execute(sql)`.
+        What it cannot see is a table name split across separately-built
+        fragments - `cur.execute("SELECT * FROM " + tbl)` or `"... FROM %s" % t`
+        - because neither fragment contains both the keyword and the name.
+
+        So constrain the shape instead: every execute() first argument must be a
+        string literal, an f-string, or a bare name. Concatenation and
+        %-formatting are rejected outright. app.py has exactly one non-literal
+        site today (prices() passes a variable holding an f-string), which is
+        allowed because the literal it came from is scanned where it is assigned.
+
+        An earlier version of this test instead re-extracted table names from the
+        fragments of dynamic arguments. It was vacuous: the one site it found was
+        a Name with no fragments, so it passed no matter what the allowlist
+        contained. A mutation check - dropping NOT_APP_OWNED from the accounted
+        set - left it green. This version fails on that same class of mutant.
+        """
+        tree = ast.parse(inspect.getsource(app))
+        allowed = (ast.Constant, ast.JoinedStr, ast.Name)
+        offenders = []
+        saw_non_literal = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "execute") or not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and not isinstance(first.value, str):
+                offenders.append((node.lineno, "non-string literal"))
+                continue
+            if not isinstance(first, allowed):
+                offenders.append((node.lineno, type(first).__name__))
+            elif isinstance(first, ast.Name):
+                saw_non_literal += 1
+        self.assertEqual(
+            offenders,
+            [],
+            "cur.execute() must be given a string literal, an f-string, or a name "
+            "holding one - not a concatenated or %-formatted expression, which "
+            "test_app_schema's table extractor cannot see through. Build the SQL "
+            f"in a literal or an f-string instead. Offenders: {offenders}",
+        )
+        # Guards this test against going vacuous the way the previous version
+        # did: prices()'s `cur.execute(sql, ...)` must still be the Name case it
+        # is written for. If that count drops to zero the assertion above is
+        # passing without ever having looked at anything interesting.
+        self.assertGreaterEqual(saw_non_literal, 1)
 
 
 if __name__ == "__main__":
