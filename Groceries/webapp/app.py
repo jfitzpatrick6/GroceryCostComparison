@@ -53,15 +53,13 @@ def price_data_available(cur):
 @app.route("/healthz")
 def healthz():
     """Liveness/readiness probe (#61). Returns JSON, 200 when the database
-    answers and 503 when it doesn't; #71 will point a Docker HEALTHCHECK at it.
+    answers and 503 when it doesn't. docker-compose.yml points the webapp
+    container's HEALTHCHECK at it (#71).
 
-    Checks the database rather than merely answering, because "the Flask
-    process is up but Postgres is unreachable" is the failure state that
-    actually matters here - it's exactly what a webapp restart during db
-    startup looks like, and compose's `depends_on` only waits for the
-    container to start, not for Postgres to accept connections. A probe that
-    only proved the process was alive would report healthy while every page
-    500s.
+    Checks the database rather than merely answering, because "the process is
+    up but Postgres is unreachable" is the failure state that actually matters
+    here. A probe that only proved the process was alive would report healthy
+    while every page 500s.
 
     Two deliberate properties:
 
@@ -80,8 +78,8 @@ def healthz():
     makes Docker restart the container: a HEALTHCHECK keys off its test
     command's *exit code*, so the usual `curl -f` treats 503 and an unhandled
     500 identically. The status distinction is for people and proxies; Docker
-    only learns "not 2xx". (#71 wires up the actual HEALTHCHECK - as of this
-    commit nothing consumes the code yet.)
+    only learns "not 2xx". (#71 wires this up in docker-compose.yml, using the
+    image's own Python rather than curl, which python:3.12-slim does not ship.)
     """
     try:
         conn = get_connection()

@@ -2,7 +2,8 @@ services:
   grocery_scraper:
     build: .
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     env_file:
       - ../.env
     environment:
@@ -16,14 +17,22 @@ services:
   # Same image/build as grocery_scraper (#33) - runs cron in the foreground
   # instead of scraping once and exiting, so prices stay fresh without
   # anyone needing to remember to run `docker compose up grocery_scraper`
-  # by hand. Purely additive: grocery_scraper's one-shot behavior above is
-  # unchanged, this is an opt-in second way to run the same image. Not
-  # started by a bare `docker compose up` - add it explicitly (`docker
-  # compose up -d scraper_scheduler`) since it's meant to run continuously.
+  # by hand.
+  #
+  # CORRECTION to what an earlier version of this comment claimed: this IS
+  # started by a bare `docker compose up -d`. There is no `profiles:` key
+  # anywhere in this file, so compose starts every service listed - which is
+  # also why a bare `up -d` starts the *one-shot* grocery_scraper above and
+  # kicks off a full ~20-minute scrape on every `up`, including after a reboot.
+  # That is the actual footgun here, and #63 owns fixing it (profile the
+  # one-shot, leave this in the default set). Until then, what README documents
+  # is naming services explicitly, which is why the dev host was found running
+  # db and webapp with no scheduler at all and 41-day-old prices.
   scraper_scheduler:
     build: .
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     env_file:
       - ../.env
     environment:
@@ -47,6 +56,29 @@ services:
       - db_data:/var/lib/postgresql/data
     networks:
       - my_network
+    # Without this, `depends_on` only waits for the container to *start*, not for
+    # Postgres to accept connections - so a webapp restart during db startup
+    # served 500s until the database came up (#71).
+    #
+    # `-h 127.0.0.1` is load-bearing, not decoration. Without it pg_isready uses
+    # the unix socket, and the postgres image's *temporary* initdb server listens
+    # on that socket during first-time initialization - so the probe reports ready
+    # while the real server is still coming up. Measured on a throwaway volume
+    # with a 0.1s prober: the socket said READY about 2.2s before TCP did, and
+    # clients connecting in that window were refused with "FATAL: the database
+    # system is shutting down". The webapp survives that (init_schema.py retries),
+    # but grocery_scraper connects once with no retry and no `restart:` policy,
+    # so a clean `docker compose up -d` could launch a one-shot scrape that dies
+    # instantly and silently. Probing TCP probes the server that will actually
+    # still be there.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U user -d grocery_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Recovery from an unclean shutdown replays WAL before accepting
+      # connections, which on a large grocery_prices can outlast a few intervals.
+      start_period: 30s
 
   # Reachable over LAN and, since the host itself is Tailscale-joined, over
   # the tailnet too via the host's own tailscale0 interface - no sidecar
@@ -62,7 +94,12 @@ services:
   webapp:
     build: ./webapp
     depends_on:
-      - db
+      db:
+        # Waits for Postgres to accept connections, not merely for the container
+        # to exist (#71). init_schema.py also retries on its own, so this is
+        # belt-and-braces rather than the only thing standing between a restart
+        # and a wall of 500s.
+        condition: service_healthy
     ports:
       - "5000:5000"
     networks:
@@ -75,6 +112,45 @@ services:
       - DB_USER=user
       - DB_PASS=password
     restart: unless-stopped
+    # `restart: unless-stopped` only acts when the container *exits*. A process
+    # that is hung but alive looks fine to Docker forever without this (#71).
+    #
+    # Be honest about what this does and doesn't catch. It reliably detects a
+    # dead or wedged process and loss of the database, because /healthz opens a
+    # connection and runs SELECT 1. It does NOT detect one slow request: with
+    # 2 workers x 4 threads there are 8 request slots, so a single
+    # /planner/ingredients hanging on synchronous USDA calls (#64) blocks one of
+    # them and /healthz still answers 200 on another. Only full saturation - all
+    # 8 slots wedged - trips it. That is a real limitation, not a safety net for
+    # #64; #64 still has to be fixed on its own merits.
+    #
+    # Probes /healthz with the image's own interpreter: python:3.12-slim ships no
+    # curl and no wget, so the usual `curl -f` healthcheck would fail on a
+    # perfectly healthy container. urlopen raises HTTPError on a non-2xx
+    # response, which exits non-zero - and Docker keys off the exit code, not the
+    # HTTP status, so /healthz's 503-vs-500 distinction is for humans and
+    # proxies rather than for this.
+    #
+    # start_period is 90s. It deliberately does NOT cover init_schema.py's full
+    # theoretical retry budget: CONNECT_TIMEOUT applies per attempt, so the worst
+    # case is 30 x (2s sleep + 5s connect) = 210s, not the 65s an earlier version
+    # of this comment claimed. 90s is still the right value, for two reasons.
+    # First, `depends_on: service_healthy` means the database is already
+    # accepting connections before this container starts, so init_schema normally
+    # succeeds on attempt 1 and the retry budget is a fallback rather than the
+    # expected path. Second, exceeding start_period is cosmetic here: Docker
+    # *labels* a container unhealthy but does not restart it for being so, and
+    # nothing depends on webapp's health, so the cost of a too-short window is a
+    # misleading `docker ps` line during a genuinely slow database start - not a
+    # restart loop.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
 
 networks:
   my_network:

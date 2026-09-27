@@ -92,6 +92,8 @@ docker compose exec webapp python init_schema.py
 
 The tables the *scraper* owns (`grocery_prices` and its `grocery_prices_latest` view) are created by `collector.py` on the first scrape, not here; pages that need them degrade gracefully until then.
 
+Both `db` and `webapp` have Docker **healthchecks**, and dependent services wait on `db` with `condition: service_healthy` rather than merely for its container to start (#71). `docker compose up` therefore blocks until Postgres is actually accepting connections, and `docker ps` shows a webapp that is hung-but-alive as `unhealthy` instead of looking fine — which `restart: unless-stopped` alone cannot detect, since it only acts when a container exits. The webapp also runs as a **non-root** user (uid 10001); the scraper image still runs as root because its cron job and Playwright install assume it.
+
 ## What gets written
 
 Everything lands in a single `grocery_prices` table in the `grocery_db` Postgres database (default credentials are in `Groceries/docker-compose.yml` - fine for a local/home-server Postgres instance not exposed elsewhere, change them if that's not your situation):

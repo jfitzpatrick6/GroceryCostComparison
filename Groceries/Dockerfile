@@ -24,5 +24,18 @@ COPY . .
 RUN chmod 0644 /app/scraper-cron && cp /app/scraper-cron /etc/cron.d/scraper-cron \
     && chmod 0755 /app/scheduler_entrypoint.sh
 
+# Runs as ROOT, deliberately - unlike the webapp image, which is non-root (#71).
+# Two things here assume it, both verified rather than assumed:
+#   - `playwright install` above put Chromium under /root/.cache/ms-playwright,
+#     and /root is drwx------ so a non-root user cannot read the browser it needs.
+#   - the scheduler's cron job installs into /etc/cron.d, and scraper-cron uses
+#     the `root` user field.
+# Making this image non-root is therefore not a two-line change: it needs the
+# Playwright cache relocated (PLAYWRIGHT_BROWSERS_PATH to a world-readable path)
+# and cron replaced with something unprivileged - the honest shape is dropping
+# cron for a sleep loop in the entrypoint, which would also remove the
+# `.env.runtime` quoting fragility that scheduler_entrypoint.sh's own comment
+# flags. Left as a separate change with its own verification.
+
 # Run the script
 CMD ["python", "collector.py"]
