@@ -29,8 +29,16 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "grocery-cost-comparison-dev-key")
 
 
-def get_connection():
-    return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+def get_connection(connect_timeout=None):
+    # connect_timeout defaults to None, i.e. libpq's own default, so the 36
+    # existing callers are unaffected. init_schema.py passes one because at
+    # container startup a black-holed DB_HOST would otherwise block libpq
+    # indefinitely, its retry loop would never advance, and the container would
+    # sit "Up" having created nothing (#82).
+    extra = {} if connect_timeout is None else {"connect_timeout": connect_timeout}
+    return psycopg2.connect(
+        host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS, **extra
+    )
 
 
 def price_data_available(cur):

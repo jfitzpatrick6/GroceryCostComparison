@@ -50,10 +50,6 @@ _ALTER_TABLE = re.compile(r"ALTER\s+TABLE\s+(\w+)", re.IGNORECASE)
 # invariant test below; deliberately matches the four keywords that introduce a
 # table name in this codebase's SQL rather than trying to be a SQL parser.
 _SQL_TABLE = re.compile(r"\b(?:FROM|INTO|UPDATE|JOIN)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
-_SQL_STATEMENT = re.compile(
-    r"\b(?:SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE)\b",
-    re.IGNORECASE,
-)
 # Words that can legitimately follow FROM/INTO/UPDATE/JOIN in real SQL without
 # being a table name. Kept minimal and explicit on purpose: the point of the
 # invariant test is to notice a table nobody creates, so silently swallowing
@@ -89,7 +85,18 @@ def _docstring_constants(tree):
 
 def _tables_in_source(source):
     """The extraction half of _referenced_tables, split out so it can be tested
-    against fabricated source rather than only against app.py."""
+    against fabricated source rather than only against app.py.
+
+    Scans every non-docstring string constant, with deliberately no "does this
+    literal look like a SQL statement" gate. An earlier version required the
+    literal to contain SELECT/INSERT/UPDATE/..., which silently skipped any
+    fragment carrying only the table half of a query - the exact blind spot this
+    suite exists to close. Measured on app.py, dropping the gate yields the
+    identical 12 names with no new noise, because comments are not AST string
+    constants and docstrings are excluded separately. (Scanning the *raw file*
+    instead of the AST is what produced eighteen bogus names out of English prose
+    like "from the" and "into a"; the AST is what makes the gate unnecessary.)
+    """
     tree = ast.parse(source)
     docstrings = _docstring_constants(tree)
     found = set()
@@ -97,8 +104,6 @@ def _tables_in_source(source):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
             continue
         if id(node) in docstrings:
-            continue
-        if not _SQL_STATEMENT.search(node.value):
             continue
         found.update(m.lower() for m in _SQL_TABLE.findall(node.value))
     # `SET` is captured by the UPDATE branch on `ON CONFLICT ... DO UPDATE SET`,
@@ -158,11 +163,12 @@ class _SchemaTrackingCursor:
 
 
 def _ensure_functions():
-    """Every ensure_*_table function in app.py, discovered rather than listed.
+    """Every ensure_* schema helper in app.py, discovered rather than listed.
 
     Listing them by hand is how a tenth function gets added with an unsatisfied
-    dependency and no test notices. Filtering on the (cur) signature keeps this
-    from picking up anything that isn't one of these schema helpers.
+    dependency and no test notices. Filtering on the `(cur)` signature keeps this
+    to the schema helpers - which since #82 includes ensure_app_schema itself, so
+    the aggregate is exercised by the same loops as its parts.
     """
     found = []
     for name, obj in vars(app).items():
@@ -390,6 +396,74 @@ def a_route(cur):
             _tables_in_source(source),
             {"widgets", "gadgets", "doohickeys", "thingamajigs", "inventory", "stock", "t"},
         )
+
+
+    def test_not_app_owned_does_not_overlap_what_we_create(self):
+        # NOT_APP_OWNED is how the invariant test above is allowed to excuse a
+        # table. Nothing stops someone silencing a failure by moving a real
+        # app-owned table into that set, so assert the two are disjoint.
+        cur = _SchemaTrackingCursor()
+        app.ensure_app_schema(cur)
+        self.assertEqual(
+            self.NOT_APP_OWNED & set(cur.tables),
+            set(),
+            "NOT_APP_OWNED must not contain a table ensure_app_schema creates - "
+            "that would let the invariant be satisfied by excusing our own schema",
+        )
+
+    def test_no_execute_builds_sql_by_concatenation_or_percent_formatting(self):
+        """Closes the residual blind spot in the extractor, with teeth.
+
+        _tables_in_source walks every string constant in the module, so it sees
+        f-strings too (their literal pieces are Constant children) and it sees a
+        literal assigned to a variable and later passed as `cur.execute(sql)`.
+        What it cannot see is a table name split across separately-built
+        fragments - `cur.execute("SELECT * FROM " + tbl)` or `"... FROM %s" % t`
+        - because neither fragment contains both the keyword and the name.
+
+        So constrain the shape instead: every execute() first argument must be a
+        string literal, an f-string, or a bare name. Concatenation and
+        %-formatting are rejected outright. app.py has exactly one non-literal
+        site today (prices() passes a variable holding an f-string), which is
+        allowed because the literal it came from is scanned where it is assigned.
+
+        An earlier version of this test instead re-extracted table names from the
+        fragments of dynamic arguments. It was vacuous: the one site it found was
+        a Name with no fragments, so it passed no matter what the allowlist
+        contained. A mutation check - dropping NOT_APP_OWNED from the accounted
+        set - left it green. This version fails on that same class of mutant.
+        """
+        tree = ast.parse(inspect.getsource(app))
+        allowed = (ast.Constant, ast.JoinedStr, ast.Name)
+        offenders = []
+        saw_non_literal = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "execute") or not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and not isinstance(first.value, str):
+                offenders.append((node.lineno, "non-string literal"))
+                continue
+            if not isinstance(first, allowed):
+                offenders.append((node.lineno, type(first).__name__))
+            elif isinstance(first, ast.Name):
+                saw_non_literal += 1
+        self.assertEqual(
+            offenders,
+            [],
+            "cur.execute() must be given a string literal, an f-string, or a name "
+            "holding one - not a concatenated or %-formatted expression, which "
+            "test_app_schema's table extractor cannot see through. Build the SQL "
+            f"in a literal or an f-string instead. Offenders: {offenders}",
+        )
+        # Guards this test against going vacuous the way the previous version
+        # did: prices()'s `cur.execute(sql, ...)` must still be the Name case it
+        # is written for. If that count drops to zero the assertion above is
+        # passing without ever having looked at anything interesting.
+        self.assertGreaterEqual(saw_non_literal, 1)
 
 
 if __name__ == "__main__":

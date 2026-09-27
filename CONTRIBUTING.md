@@ -230,19 +230,27 @@ recipe routes 500'd on an empty database because they provisioned nothing.
 
 What has *not* been removed yet is the legacy behaviour underneath: ad-hoc
 `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE` calls still sit in nine
-`ensure_*_table()` functions at roughly 37 call sites (counts as of #77 — grep
-`ensure_` to recheck rather than trusting a number in a document), and they still
-execute on nearly every request. They are now semantic no-ops, but not free: DDL
-takes `ACCESS EXCLUSIVE` locks, verified on postgres:16 even when
-`IF NOT EXISTS` means nothing is created. One of them
+`ensure_*_table()` functions at roughly 32 call sites inside route handlers (47
+occurrences of `ensure_` in total, including the nine definitions — grep to
+recheck rather than trusting a number in a document), and they still execute on
+nearly every request. They are now semantic no-ops, but **not free**: measured on
+postgres:16 by holding a transaction open and reading `pg_locks` from another
+session, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes an
+**`AccessExclusiveLock`** on the relation *even when the column already exists
+and nothing changes*. `CREATE TABLE IF NOT EXISTS` against an existing table
+takes **no lock at all** (Postgres notices and skips it), so the cost is the
+`ALTER`s, not the `CREATE`s — app.py has about ten of them. One call site
 (`inject_profile_switcher`) is a Flask `@app.context_processor`, so *every page
 render* runs DDL and a `COMMIT`, and one path drops and re-adds a constraint on
 `meal_plan_slots` implicitly. Removing those call sites is #66.
 
 Rules while that stands:
 
-- **Never add a new `ensure_*_table()` call site.** If you need a schema change,
-  say so in the PR and coordinate it with the migrations issue (#66).
+- **Never add a new `ensure_*_table()` call site in a request handler.** If you
+  need a schema change, say so in the PR and coordinate it with the migrations
+  issue (#66). (`ensure_app_schema()` calling the nine helpers is the sanctioned
+  exception — that's the one ordered place schema is declared, not a request
+  handler. The rule below is what that means in practice.)
 - **A new table goes in `ensure_app_schema()`**, not in a route. That function is
   the single ordered place the webapp's schema is declared, and
   `test_app_schema.py` asserts every table any route queries is either created
