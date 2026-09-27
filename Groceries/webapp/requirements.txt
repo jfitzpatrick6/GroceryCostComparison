@@ -1,3 +1,7 @@
 Flask==3.1.0
 psycopg2-binary==2.9.10
 requests==2.32.3
+# WSGI server - replaces `python app.py`, which ran Werkzeug's development
+# server (see #61). Pinned like everything else here; 23.0.0 is the version
+# this was verified against.
+gunicorn==23.0.0
