@@ -188,7 +188,8 @@ def staples():
                 """)
             else:
                 cur.execute("""
-                    SELECT s.product, s.store, NULL AS price, NULL AS size, NULL AS unit_price, NULL AS unit, NULL AS datetime
+                    SELECT s.product, s.store, NULL AS price, NULL AS size,
+                           NULL AS unit_price, NULL AS unit, NULL AS datetime
                     FROM staples s
                     ORDER BY s.product, s.store
                 """)
@@ -256,7 +257,11 @@ def grocery_list():
             ensure_list_table(cur)
             ensure_pantry_table(cur)
             conn.commit()
-            cur.execute("SELECT id, name, qty, checked, added_by, checked_by FROM grocery_list_items ORDER BY checked, added_at")
+            cur.execute("""
+                SELECT id, name, qty, checked, added_by, checked_by
+                FROM grocery_list_items
+                ORDER BY checked, added_at
+            """)
             items = cur.fetchall()
 
             # Real cross-store matching (#25) - normalizes both the list
@@ -454,7 +459,8 @@ def set_pantry_item():
                 existing = cur.fetchone()
                 if existing:
                     cur.execute(
-                        "UPDATE pantry_items SET amount = %s, unit = %s, updated_at = now(), updated_by = %s WHERE id = %s",
+                        "UPDATE pantry_items SET amount = %s, unit = %s, "
+                        "updated_at = now(), updated_by = %s WHERE id = %s",
                         (amount, unit, active_profile(), existing[0]),
                     )
                 else:
@@ -983,7 +989,13 @@ def _meal_param():
 @app.route("/planner")
 def planner():
     week_param = request.args.get("week")
-    if week_param:
+    # The two branches call different functions with different argument shapes
+    # (parse a supplied week vs. derive this week's start), and the if/else
+    # reads more clearly than the equivalent three-line ternary. Length isn't
+    # the argument - the ternary would be 113 chars at this indent, under the
+    # 120 limit - so this is a readability call, suppressed at the one site
+    # rather than by ignoring SIM108 repo-wide.
+    if week_param:  # noqa: SIM108
         week_start = datetime.date.fromisoformat(week_param)
     else:
         week_start = week_start_for(datetime.date.today())
@@ -1231,7 +1243,8 @@ def deplete_pantry_for_slot(cur, week_start, day_of_week, meal):
             (remaining, active_profile(), row["id"]),
         )
         cur.execute(
-            "INSERT INTO cook_depletions (week_start, day_of_week, meal, ingredient_name, unit, pantry_before, used_amount) "
+            "INSERT INTO cook_depletions "
+            "(week_start, day_of_week, meal, ingredient_name, unit, pantry_before, used_amount) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (week_start, day_of_week, meal, ing["name"], ing["unit"], pantry_before, used),
         )
@@ -1697,7 +1710,8 @@ def readd_recipe():
             open_day = next((d for d in range(7) if d not in taken), None)
             if open_day is not None:
                 cur.execute(
-                    "INSERT INTO meal_plan_slots (week_start, day_of_week, meal, recipe_id) VALUES (%s, %s, 'dinner', %s)",
+                    "INSERT INTO meal_plan_slots (week_start, day_of_week, meal, recipe_id) "
+                    "VALUES (%s, %s, 'dinner', %s)",
                     (week_start, open_day, recipe_id),
                 )
         conn.commit()

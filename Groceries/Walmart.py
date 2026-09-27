@@ -3,7 +3,6 @@ import json
 import math
 import random
 import re
-from typing import Dict, List, Optional, Tuple
 
 import httpx
 import pandas as pd
@@ -48,8 +47,14 @@ GROCERY_CATEGORY_URLS = [
 SIZE_PATTERN = r"(\d+(\.\d+)?\s*(lb|oz|fl oz|gal|each|ct|count|dozen|ounce|-ounce|-pack|pack))"
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.1",
+    # Wrapped as adjacent string literals (implicit concatenation) purely to stay
+    # under the line limit - the resulting values are byte-identical to the
+    # single-line forms, which matters because these are spoofed browser UA
+    # strings that a bot check will compare exactly.
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/17.6 Safari/605.1.1",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.",
 ]
 
@@ -71,7 +76,7 @@ BASE_HEADERS = {
 }
 
 
-def parse_search(html_text: str) -> Tuple[List[Dict], int]:
+def parse_search(html_text: str) -> tuple[list[dict], int]:
     """Extract results from a Walmart search/browse page's embedded Next.js data."""
     sel = Selector(text=html_text)
     data = sel.xpath('//script[@id="__NEXT_DATA__"]/text()').get()
@@ -102,7 +107,7 @@ async def scrape_walmart_page(session: httpx.AsyncClient, url: str, page: int = 
     return resp
 
 
-async def scrape_category(url: str, session: httpx.AsyncClient) -> List[Dict]:
+async def scrape_category(url: str, session: httpx.AsyncClient) -> list[dict]:
     """Walk one category/search URL across its pages, capped at 25 - Walmart's own limit."""
     results = []
     resp = await scrape_walmart_page(session, url, page=1)
@@ -117,7 +122,7 @@ async def scrape_category(url: str, session: httpx.AsyncClient) -> List[Dict]:
     return results
 
 
-async def scrape_all_categories(session: httpx.AsyncClient) -> List[Dict]:
+async def scrape_all_categories(session: httpx.AsyncClient) -> list[dict]:
     """Walk every category in GROCERY_CATEGORY_URLS once. Products may still show
     up more than once if Walmart cross-lists an item across categories - that's
     handled by the caller's run-level dedup, not here."""
@@ -127,7 +132,7 @@ async def scrape_all_categories(session: httpx.AsyncClient) -> List[Dict]:
     return results
 
 
-def _build_session(store: Optional[str]) -> httpx.AsyncClient:
+def _build_session(store: str | None) -> httpx.AsyncClient:
     headers = dict(BASE_HEADERS)
     headers["user-agent"] = random.choice(USER_AGENTS)
     limits = httpx.Limits(max_keepalive_connections=5, max_connections=5)
@@ -152,7 +157,7 @@ def _extract_size(product_name: str) -> str:
     return match.group(1) if match else "Size/quantity not found"
 
 
-def _extract_price(product: Dict) -> Optional[float]:
+def _extract_price(product: dict) -> float | None:
     raw = product.get("priceInfo", {}).get("linePrice", "")
     try:
         return float(str(raw).strip().removeprefix("$").replace(",", ""))
@@ -160,7 +165,7 @@ def _extract_price(product: Dict) -> Optional[float]:
         return None
 
 
-def _dedupe_key(product_name: str, product_size: str) -> Tuple[str, str]:
+def _dedupe_key(product_name: str, product_size: str) -> tuple[str, str]:
     """Products can appear in more than one category (cross-listed items, or a
     category id nesting under another - see GROCERY_CATEGORY_URLS comments).
     (name, size) is a reasonable stable identity here since Walmart's raw
@@ -169,7 +174,7 @@ def _dedupe_key(product_name: str, product_size: str) -> Tuple[str, str]:
     return product_name, product_size
 
 
-async def run(store: Optional[str]) -> List[Dict]:
+async def run(store: str | None) -> list[dict]:
     session = _build_session(store)
     try:
         return await scrape_all_categories(session)

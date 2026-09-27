@@ -1,0 +1,31 @@
+# Build context for the scraper image (docker-compose `build: .`).
+#
+# The scraper only imports aldis, BJs, tops, Walmart, units, collector and
+# instacart_storefront - so the webapp is excluded entirely. Without this,
+# `COPY . .` shipped all of Groceries/webapp/ (Flask app, templates and tests)
+# into an image that also carries headless Chromium, pandas and Playwright,
+# which is dead weight and misleading about what the image actually runs.
+
+webapp/
+
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Never bake config into an image, even though the real .env lives one level up
+# and docker-compose passes it via env_file at runtime instead.
+.env
+.env.*
+
+# Local scrape artifacts (see .gitignore) - walmart_search.json and friends are
+# debugging dumps, not inputs.
+*.json
+*.csv
+
+# Docker/CI files the image doesn't need
+docker-compose.yml
+Dockerfile
+.dockerignore

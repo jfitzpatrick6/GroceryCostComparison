@@ -104,3 +104,16 @@ Every scrape appends new rows rather than overwriting, so there's a real history
 - `Groceries/` - the scrapers, shared unit-conversion helper, and Docker setup; everything above applies to what's in here
 - `Groceries/webapp/` - the Flask app, its own (much lighter) Dockerfile
 - `Old Report/`, `Testing Attempts/` - earlier experiments, not part of the running pipeline, kept for reference
+
+## Working on this
+
+Everything above is about *using* the app. If you're changing it - human or agent - read **[CONTRIBUTING.md](CONTRIBUTING.md)** first. It's the working agreement: GitHub issues as the source of truth, one branch per issue, PRs with CI green and a second-opinion review, the commit-message convention, the code and testing conventions this repo follows, and the specific lint exemptions (each with its reason). `AGENTS.md` is the short version for AI agents picking the repo up cold.
+
+Lint and tests:
+
+```
+.venv/bin/ruff check .
+.venv/bin/pytest
+```
+
+Both run on every push and PR via [`.github/workflows/ci.yml`](.github/workflows/ci.yml). See CONTRIBUTING.md §11 for setting up `.venv` - the host Python version may not match the containers', which affects one pinned dependency.

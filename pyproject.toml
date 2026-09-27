@@ -1,0 +1,109 @@
+# Repo-wide tooling config. There is no packaging here (no library is built or
+# published) - this file exists only to configure ruff and pytest so that
+# `ruff check` and `pytest` mean the same thing on a laptop, in CI, and for
+# whoever picks this up next. See CONTRIBUTING.md for the rules themselves.
+
+[tool.ruff]
+# The scraper container is python:3.10-bookworm and the webapp container is
+# python:3.12-slim. Target the lower of the two so a modernization fix can't
+# suggest syntax the scraper image can't actually run.
+target-version = "py310"
+
+# 120 is what this codebase already writes to. 100 would flag 71 existing lines
+# (mostly the long "why" comments and SQL strings this repo deliberately keeps),
+# 120 flags 14 - i.e. the limit matches the code rather than forcing a reflow
+# of working comments for no behavioral gain.
+line-length = 120
+
+# "Old Report/" and "Testing Attempts/" are earlier experiments that README
+# explicitly documents as not part of the running pipeline. Linting dead code
+# produces churn that never ships; keep them out of the gate.
+extend-exclude = ["Old Report", "Testing Attempts", ".venv"]
+
+# The directories ruff treats as first-party roots. Without this it cannot tell
+# the repo's own modules from third-party packages: there is no src/ layout, and
+# both the scraper and the webapp import their siblings by bare name
+# (`import units`, `import matching`). Left undeclared, isort merges them into
+# one alphabetized block, putting `import aldis` beside `import pandas`.
+#
+# Note this is a top-level [tool.ruff] key, NOT [tool.ruff.lint.isort] - putting
+# it under the isort table is a hard TOML parse error ("unknown field `src`"),
+# which takes the whole config down rather than just the import sorting.
+#
+# Preferred over an explicit `known-first-party` list so a new module is
+# classified correctly the moment it exists, instead of after someone remembers
+# to add it. Verified to produce the same stdlib / third-party / local grouping
+# as enumerating all nine current modules by hand.
+src = [".", "Groceries", "Groceries/webapp"]
+
+[tool.ruff.lint]
+# Set explicitly rather than relying on ruff's defaults, so upgrading ruff can't
+# silently change what this repo's gate enforces.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes - unused imports/variables, undefined names. Real bugs.
+    "I",    # isort - import ordering
+    "B",    # flake8-bugbear - mutation of default args, late-binding closures, etc.
+    "UP",   # pyupgrade - typing.Dict -> dict, Optional[X] -> X | None
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific (RUF100 catches noqa directives that stopped doing anything)
+]
+
+# Deliberate exceptions. Each one is here because the rule conflicts with a
+# decision this codebase makes on purpose - not because fixing it was annoying.
+# If you add to this list, say why in the comment.
+#
+# These are blanket ignores, so each one names a *pattern* that recurs, not a
+# single site. A rule violated once gets a targeted `# noqa: <CODE>` on that
+# line instead (see the note below) - that keeps the suppression visible where
+# a reader hits it, and RUF100 flags it once it stops being necessary.
+ignore = [
+    # `with conn:` wrapping `with conn.cursor() as cur:` is idiomatic psycopg2 -
+    # the outer block is the transaction boundary, the inner is the cursor
+    # lifetime. Collapsing them into one `with a, b:` obscures that distinction.
+    # Recurs across most of the 36 routes, so a per-site noqa would be noise.
+    "SIM117",
+    # try/except/pass is used where the guarded body *assigns* and the fallback
+    # is "keep the original value" (e.g. _scale_ingredient_row passing a
+    # non-numeric amount like "a pinch" through unscaled). contextlib.suppress
+    # reads worse there because the assignment has to move out of the block.
+    "SIM105",
+    # This app's entire domain is matching messy human-written product and
+    # recipe text, where typographic characters are legitimate DATA rather than
+    # typos to normalize. The load-bearing example is matching.py's
+    # r"\bconfectioners['’]?\s+sugar\b" - real store listings use the curly
+    # apostrophe, and ruff's proposed fix replaces it with a GRAVE ACCENT, so
+    # autofixing would silently break cross-store matching. Never autofix these.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+# BLE001 (blind `except Exception`) is intentionally NOT in `select`. Most of
+# the broad catches here are deliberate fault tolerance: one store's scraper
+# throwing must not discard the other stores' results for the run (collector.py,
+# see #24), and one malformed product must not abort a 20-minute scrape (BJs.py,
+# instacart_storefront.py). Not all of them are that clean, though - units.py
+# converts any exception into an "Error: ..." string that collector.py then
+# writes into grocery_prices.rate, which deserves a look of its own. A lint
+# rule that mostly fights the architecture gets ignored, and an ignored lint
+# rule is worse than none; the honest fix is per-site review, not a rule.
+
+# No per-file-ignores, and no blanket ignore for a rule violated at one site.
+# A single line that needs suppressing gets a `# noqa: <CODE>` on that exact
+# line with its reason beside it. RUF100 then keeps it honest by flagging the
+# directive once it stops doing anything - which already happened once here: the
+# `# noqa: E402` on test_usda_matching.py's `import app` was stale, because ruff
+# tolerates an import that follows a conditional guard block, and RUF100 caught
+# and removed it.
+
+[tool.pytest.ini_options]
+# Tests live next to the code they cover in Groceries/webapp/ and import it
+# directly (`import app`, `import matching`). There is no __init__.py there, so
+# pytest's default prepend import mode puts that directory on sys.path - which
+# is what makes those bare imports resolve from the repo root.
+testpaths = ["Groceries/webapp"]
+python_files = ["test_*.py"]
+addopts = "-ra"

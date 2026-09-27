@@ -1,14 +1,14 @@
+import os
 import time
 
 import pandas as pd
 import psycopg2
-import os
 
 import aldis
 import BJs
 import tops
-import Walmart
 import units
+import Walmart
 
 # Database Connection
 DB_HOST = os.getenv("DB_HOST", "db")
@@ -139,9 +139,14 @@ def store_data(df):
                 for _, row in df.iterrows():
                     unit_price, unit = _numeric_rate(row['Price'], row['Size'])
                     cur.execute("""
-                        INSERT INTO grocery_prices (product, price, rate, size, store, store_id, datetime, unit_price, unit)
+                        INSERT INTO grocery_prices
+                            (product, price, rate, size, store, store_id, datetime, unit_price, unit)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (row['Product'], row['Price'], row['Rate'], row['Size'], row['store'], row['store_id'], row['Datetime'], unit_price, unit))
+                    """, (
+                        row['Product'], row['Price'], row['Rate'], row['Size'],
+                        row['store'], row['store_id'], row['Datetime'],
+                        unit_price, unit,
+                    ))
         print(f"Inserted {len(df)} rows into grocery_prices.")
     finally:
         conn.close()

@@ -1,0 +1,122 @@
+name: CI
+
+# The gate described in CONTRIBUTING.md. Nothing merges to master with this red.
+#
+# Two independent jobs, because they answer different questions:
+#   lint  - is the code statically sound, and is it syntax the *oldest* runtime
+#           we ship can parse? (ruff's target-version is py310, matching the
+#           scraper container; the webapp container is 3.12.)
+#   test  - does behavior hold on the runtime the webapp actually ships in?
+#
+# Neither job needs a Postgres service. The tests under Groceries/webapp/ cover
+# matching.py (pure functions over fixture catalogs) and app.py's USDA lookup
+# (requests.get monkeypatched to fixtures). Anything that would need a live
+# database is not yet tested - see the "Testing" section of CONTRIBUTING.md.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A force-push or new commit to an open PR cancels the run that was already in
+# flight for it - no point burning minutes on a commit that's been superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned rather than floating so a ruff release can't turn master red
+      # overnight with a new default rule. Rule selection lives in
+      # pyproject.toml; bumping this is a deliberate, reviewed act.
+      - name: Install ruff
+        run: pip install "ruff==0.16.9"
+
+      - name: Ruff check
+        run: ruff check .
+
+      # Ruff's formatter is deliberately NOT run here. This repo has an
+      # established hand-maintained layout (long "why" comments wrapped to a
+      # readable width, SQL aligned inside triple-quoted strings) that
+      # `ruff format` would reflow wholesale, producing a diff with no
+      # behavioral content. Lint is enforced; formatting is not.
+
+  test:
+    name: Test (pytest, py3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # The webapp's own pins. psycopg2-binary is imported by app.py at module
+      # load, so it has to be installed for the tests to import it - but no
+      # database is ever contacted by any test.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Groceries/webapp/requirements.txt
+          pip install "pytest>=8"
+
+      # Split into two steps on purpose.
+      #
+      # The mocked/local suite is the gate: deterministic, no network, and a
+      # failure always means our code is wrong.
+      #
+      # The live-FDC tier is NOT a gate, and that is deliberate. It asserts
+      # exact gram values the real USDA API returns today (1 tsp black pepper =
+      # 2.3g, 1 cup butter = 227g, ...). Those are third-party data: an FDC
+      # re-rank, a revision, or a 429 would redden master with no code change
+      # and no action anyone could take. That is precisely the flake that
+      # trains people to ignore CI. So it runs, it reports, and it cannot block
+      # - the value is in seeing the result, not in gating on it.
+      #
+      # `-k` selects on the unittest class names (LiveUsdaApiTests vs
+      # MockedUsdaMatchingTests); there are no pytest markers to use.
+      - name: Run tests (mocked suite - required)
+        run: pytest -v -k "not Live"
+
+      - name: Run live-FDC tests (reported, non-blocking)
+        continue-on-error: true
+        env:
+          USDA_API_KEY: ${{ secrets.USDA_API_KEY }}
+        # The guard is in the shell, not in an `if:`. GitHub's own guidance for
+        # branching on a secret is to expose it as an env var and test that -
+        # referencing the `secrets` context directly in a step-level `if` was
+        # rejected outright when this was first tried, failing the whole
+        # workflow before any job was created ("This run likely failed because
+        # of a workflow file issue", 0 jobs). This form has no context
+        # subtleties and skips just as cleanly.
+        run: |
+          if [ -z "$USDA_API_KEY" ]; then
+            echo "USDA_API_KEY not set - skipping the live-FDC tier."
+            exit 0
+          fi
+          pytest -v -k "Live"
+
+      - name: Report whether live FDC tests ran
+        if: always()
+        env:
+          USDA_API_KEY: ${{ secrets.USDA_API_KEY }}
+        run: |
+          if [ -z "$USDA_API_KEY" ]; then
+            echo "::warning::USDA_API_KEY secret not set - the live-FDC tier did not run. The mocked suite passed, but real-API ingredient matching (#54, #58) was not verified here. Run it locally with the key in .env, or add the repo secret."
+          else
+            echo "::notice::USDA_API_KEY present - live-FDC tier ran. It is non-blocking by design (see the comment above); check its step output for real-API regressions."
+          fi

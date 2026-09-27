@@ -1,0 +1,48 @@
+name: Feature / improvement
+description: New capability, or an existing one that should work better
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a household app. The bar for a new feature is *"does this make
+        the week easier for the people actually cooking and shopping"* — not
+        *"is this technically interesting"*.
+
+        State the **done bar** explicitly. Several of this repo's best issues
+        did that ("anything left unmatched shows up under 'No price match found
+        for' rather than disappearing" — #25), and it's what made them reviewable.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the actual problem?
+      description: Describe the friction in the household's week, not the missing feature. "I re-type the same 30 items every Sunday" beats "add bulk import".
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Optional, but say if you have one in mind. Leave blank if you'd rather the implementer choose.
+  - type: textarea
+    id: done-bar
+    attributes:
+      label: Done bar
+      description: What has to be true for this to count as finished? Be concrete enough that someone else can judge it without asking you.
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - "p1-blocker — breaks or endangers daily household use"
+        - "p2-should-fix — real problem, tolerable for now"
+        - "p3-hygiene — cleanup, no user-visible effect"
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Explicitly out of scope
+      description: Optional. What this should NOT try to do. Naming the boundary up front is what keeps a small issue small.
