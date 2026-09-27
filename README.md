@@ -112,6 +112,47 @@ Everything lands in a single `grocery_prices` table in the `grocery_db` Postgres
 
 Every scrape appends new rows rather than overwriting, so there's a real history in the table. `grocery_prices_latest` is a view with just the most recent row per product/store - query that instead of the raw table unless you actually want history.
 
+## Backups and restore
+
+The `db_backup` service runs `pg_dump` every night at **03:30 UTC** - deliberately after the 03:00 scrape - and writes gzip'd dumps to `backups/` at the repo root. That is a **host bind mount, outside the `db_data` volume**, because a backup stored inside the thing it backs up is not a backup. It survives `docker compose down -v`.
+
+Dumps older than `BACKUP_KEEP_DAYS` (default 14) are pruned automatically. Each attempt logs a timestamped `OK`/`FAILED` line, so check whether backups are actually happening with:
+
+```
+docker compose logs --tail 20 db_backup
+```
+
+A backup nobody has restored is a hypothesis, not a backup. **To restore over an existing database:**
+
+```
+# 1. stop the app so nothing writes mid-restore
+docker compose stop webapp scraper_scheduler
+
+# 2. clear the old schema. REQUIRED, not optional: the dump is taken without
+#    --clean, so it contains CREATE statements and no DROPs. Restoring over
+#    existing tables aborts on the first object ("relation ... already exists"),
+#    and -v ON_ERROR_STOP=1 below makes that abort the whole restore.
+docker compose exec -T db psql -U user -d grocery_db \
+  -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+
+# 3. load the dump
+gunzip -c backups/grocery_db-YYYYMMDD-HHMMSS.sql.gz \
+  | docker compose exec -T db psql -U user -d grocery_db -v ON_ERROR_STOP=1
+
+# 4. bring the app back
+docker compose start webapp scraper_scheduler
+```
+
+Keep `ON_ERROR_STOP=1`. Without it a failure partway through leaves a *silently* partial restore, which is much worse than a loud one — you'd discover it weeks later as missing recipes rather than now as an error message.
+
+Step 2 is destructive, which is the point of a restore, but check you have the dump you think you have before running it (`gunzip -c <file> | grep -c "^COPY"` should be non-zero).
+
+To restore into a **fresh** volume instead — a new host, or after losing `db_data` — start `db` alone (`docker compose up -d db`), wait for it to report healthy, and run only step 3. There is no schema to drop, and `init_schema.py` will not have run yet, so the dump supplies everything.
+
+**What is and isn't in a dump.** By default `BACKUP_INCLUDE_PRICES=false`, which excludes the *rows* of `grocery_prices` while keeping its schema and the `grocery_prices_latest` view. That keeps dumps in the kilobytes instead of the gigabytes (~17M price rows/year) and is safe because prices are the one thing here the scraper can regenerate. The tradeoff is real, though: **restoring loses price history**, so anything depending on past prices starts again from the next scrape. Recipes, ingredients, meal plans, cook history, pantry, grocery list and profiles are always included - those cannot be regenerated. Set `BACKUP_INCLUDE_PRICES=true` in the compose file if you'd rather have complete dumps; every log line states which mode ran.
+
+Verified end to end, not assumed: seeded a recipe (with an apostrophe in its name), ingredients in order, pantry, list, profile, a cooked meal-plan slot and a `cook_depletions` row, plus 5,000 price rows; dumped; restored into a **fresh** `postgres:16`; and confirmed every household row came back byte-identical, `grocery_prices` came back as an empty table with its view intact, and pruning removed a 30-day-old dump while leaving a 2-day-old one and an unrelated file alone.
+
 ## Repo layout
 
 - `Groceries/` - the scrapers, shared unit-conversion helper, and Docker setup; everything above applies to what's in here

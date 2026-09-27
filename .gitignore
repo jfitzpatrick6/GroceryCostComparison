@@ -22,3 +22,8 @@ walmart_search.json
 # Tooling caches
 .pytest_cache/
 .ruff_cache/
+
+# Nightly pg_dump output from the db_backup service (#60). Bind-mounted from the
+# host so backups survive `docker compose down -v`, and deliberately outside the
+# db_data volume. Compressed dumps of household data - never committed.
+backups/

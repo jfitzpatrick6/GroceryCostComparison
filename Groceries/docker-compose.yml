@@ -80,6 +80,54 @@ services:
       # connections, which on a large grocery_prices can outlast a few intervals.
       start_period: 30s
 
+  # Nightly pg_dump to a host directory (#60). Recipes and meal history exist only
+  # in the db_data volume and are NOT re-derivable - prices are, recipes aren't -
+  # so before this service existed a single `down -v` or disk failure was
+  # unrecoverable.
+  #
+  # Uses the postgres image for a version-matched pg_dump: no build step, no cron,
+  # just backup.sh in a loop (that file explains why a loop rather than cron).
+  db_backup:
+    image: postgres:16
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: user
+      PGPASSWORD: password
+      PGDATABASE: grocery_db
+      # Days of dumps to retain; older ones are pruned so this cannot fill the disk.
+      BACKUP_KEEP_DAYS: "14"
+      # Container-local time, and the postgres image runs UTC, so this is 03:30
+      # UTC. Deliberately after scraper-cron's 03:00 scrape, so the nightly dump
+      # follows the nightly scrape rather than racing it.
+      BACKUP_HOUR: "3"
+      BACKUP_MINUTE: "30"
+      # Excludes grocery_prices ROWS (its schema and the grocery_prices_latest
+      # view are still dumped) because that table is ~17M rows/year of data the
+      # scraper can regenerate, and including it turns a kilobyte-scale dump into
+      # a gigabyte-scale one. Set "true" to keep price history. backup.sh logs
+      # which mode ran on every attempt, so nobody has to guess what a dump holds.
+      BACKUP_INCLUDE_PRICES: "false"
+    volumes:
+      # Host bind mount, deliberately OUTSIDE the db_data volume: a backup stored
+      # inside the thing it backs up is not a backup. Relative to this file, so
+      # ../backups is the repo root. Gitignored.
+      - ../backups:/backups
+      - ./backup.sh:/backup.sh:ro
+    networks:
+      - my_network
+    # Overriding the postgres image's entrypoint also skips its `gosu postgres`
+    # privilege drop, so without this the container runs as root and every dump
+    # lands on the host as root:root - readable by the household user but not
+    # deletable without sudo. Matching the host uid keeps the backups directory
+    # manageable and is consistent with the webapp's uid 10001 (#71).
+    user: "1000:1000"
+    entrypoint: ["/bin/bash", "/backup.sh"]
+    restart: unless-stopped
+
   # Reachable over LAN and, since the host itself is Tailscale-joined, over
   # the tailnet too via the host's own tailscale0 interface - no sidecar
   # container needed. This replaces an earlier Tailscale-sidecar-in-Docker
