@@ -108,6 +108,52 @@ _SEARCH_FIXTURES = {
         _food(790018, "Flour, wheat, all-purpose, unenriched, unbleached"),
         _food(169761, "Wheat flour, white, all-purpose, unenriched"),
     ],
+    # #58: real FDC data for the bell-pepper alias query. The newer
+    # "Peppers, bell, red, raw" entry (2258590) is what a plain "bell
+    # pepper" search top-ranks now - correct food, but its detail response
+    # carries only an unmodified RACC portion (no cup/tbsp), which is why
+    # the plain query produced no estimate before the alias existed.
+    #
+    # What these fixtures actually exercise is the ALL-word identity filter,
+    # not the multi-candidate portion fallback: 2258590 is rejected for
+    # lacking "sweet" and 168550 for lacking "raw", so neither is ever
+    # fetched and 170108 is the only candidate the portion loop sees. (The
+    # fallback loop is genuinely covered elsewhere - by the "wheat flour
+    # all-purpose" fixture above, where the top Foundation entries do pass
+    # the filter but lack cup data.) Kept here anyway because they are what
+    # the real search returns, and they prove the filter rejects them.
+    "peppers sweet red raw": [
+        _food(170108, "Peppers, sweet, red, raw"),
+        _food(2258590, "Peppers, bell, red, raw"),
+        _food(168550, "Peppers, sweet, red, sauteed"),
+    ],
+    "peppers sweet green raw": [
+        _food(170427, "Peppers, sweet, green, raw"),
+        _food(2258588, "Peppers, bell, green, raw"),
+    ],
+    # #58: real FDC data for the green-onion alias query. 170005 is FIRST in
+    # live relevance order (not second, as an earlier version of this comment
+    # claimed - rechecked against the API), so the alias resolves on the
+    # first candidate; 2727585 is the Foundation entry that has only a RACC
+    # portion, and is here because the real search returns it.
+    "onion spring scallion raw": [
+        _food(170005, "Onions, spring or scallions (includes tops and bulb), raw"),
+        _food(2727585, "Green onion, (scallion), bulb and greens, root removed, raw"),
+    ],
+    # #58: what a plain "spring onion" search really returns - captured live.
+    # 170005 comes FIRST, so unlike "green onion" this name needs no alias at
+    # all: "spring" appears in the target description and #54's ALL-word
+    # filter lands it without help. The interesting entries are the two
+    # false friends that contain "spring" but aren't onions (hard red spring
+    # wheat, POLAND SPRING water) - they're what the filter has to reject,
+    # and they're why adding an alias here would be a speculative no-op that
+    # only raised the required-word count from 2 to 4.
+    "spring onion": [
+        _food(170005, "Onions, spring or scallions (includes tops and bulb), raw"),
+        _food(168889, "Wheat, hard red spring"),
+        _food(170000, "Onions, raw"),
+        _food(173234, "Beverages, water, bottled, POLAND SPRING"),
+    ],
     # Regression fixture for the ANY -> ALL query-word-matching fix: none
     # of these descriptions contain "melted" (FDC's raw-commodity entries
     # never describe a cooking state), so a correct fix must reject all of
@@ -144,6 +190,39 @@ _DETAIL_FIXTURES = {
     789951: [_portion(1.0, None, 30.0)],
     790018: [_portion(1.0, None, 30.0)],
     169761: [_portion(1.0, "cup", 125.0)],  # SR Legacy flour - has "cup"
+    # #58: real FDC portion data for the bell-pepper / green-onion entries.
+    # The "Peppers, bell, {color}, raw" entries have NO cup/tbsp portions at
+    # all (only an unmodified RACC portion) - that's exactly why a plain
+    # "bell pepper" query produces no estimate today; the SR Legacy
+    # "sweet" entries do carry cup data.
+    # Real FDC order for 170108: a whole-pepper portion comes first, then
+    # the tablespoon, then cup-sliced before cup-chopped - so the code's
+    # "first matching modifier wins" behavior returns the *sliced* value.
+    # (Chopped is heavier per cup because of less empty space; sliced is
+    # what a recipe most often means by "cups of bell pepper", so this is
+    # also the more defensible estimate.)
+    170108: [
+        _portion(1.0, "large (2-1/4 per pound, approx 3-3/4\" long, 3\" dia.)", 164.0),
+        _portion(1.0, "tablespoon", 9.3),
+        _portion(1.0, "cup, sliced", 92.0),
+        _portion(1.0, "cup, chopped", 149.0),
+    ],
+    2258590: [_portion(1.0, None, 85.0)],  # bell red - RACC only, no cup
+    168550: [],  # sauteed variant - no relevant portion data
+    # Real FDC order for 170427 differs from 170108: cup-chopped comes
+    # first here, so the same code returns 149g for green but 92g for red -
+    # an FDC data quirk, not a code bug; the tests assert each real value.
+    170427: [
+        _portion(1.0, "cup, chopped", 149.0),
+        _portion(1.0, "cup, sliced", 92.0),
+        _portion(1.0, "tbsp", 9.3),
+    ],
+    2258588: [_portion(1.0, None, 85.0)],  # bell green - RACC only, no cup
+    170005: [
+        _portion(1.0, "cup, chopped", 100.0),
+        _portion(1.0, "tbsp chopped", 6.0),
+    ],
+    2727585: [_portion(1.0, None, 85.0)],  # green onion (Foundation) - RACC only
 }
 
 
@@ -201,6 +280,80 @@ class MockedUsdaMatchingTests(unittest.TestCase):
         # "melted" entries.
         self.assertIsNone(app._usda_grams_per_unit("melted butter", ["cup"]))
 
+    def test_bell_pepper_resolves_via_alias_to_sweet_red(self):
+        # #58: without the alias, "bell pepper" resolves to the newer
+        # "Peppers, bell, red, raw" entry which has no cup portion data ->
+        # None. With it, the query becomes "peppers sweet red raw" and lands on
+        # 170108 (92g/cup sliced - real FDC order puts the whole-pepper portion
+        # first, then cup-sliced before cup-chopped).
+        self.assertEqual(app._usda_grams_per_unit("bell pepper", ["cup"]), 92.0)
+
+    def test_red_bell_pepper_resolves_via_alias(self):
+        self.assertEqual(app._usda_grams_per_unit("red bell pepper", ["cup"]), 92.0)
+
+    def test_green_bell_pepper_resolves_via_alias_to_sweet_green(self):
+        # The green alias must not reuse the red entry's data - it resolves
+        # to "Peppers, sweet, green, raw" (170427), same 149g/cup value but
+        # a different fdcId (a wrong-alias regression would still pass the
+        # value check here, so this is mostly about the alias mapping).
+        self.assertEqual(app._usda_grams_per_unit("green bell pepper", ["cup"]), 149.0)
+
+    def test_green_onion_resolves_via_alias_to_spring_onion(self):
+        # #58. Without the alias this did NOT fail safe. Verified live: a
+        # plain "green onion" search returns 170006 "Onions, young green,
+        # tops only" first - and 170005 isn't in its top six at all - so the
+        # result was 71g/cup for the greens-only product. That is a silently
+        # WRONG estimate, not a missing one, which is the failure mode this
+        # codebase exists to avoid; #58 was filed assuming it produced no
+        # estimate. The alias lands on 170005 (100g/cup chopped).
+        self.assertEqual(app._usda_grams_per_unit("green onion", ["cup"]), 100.0)
+
+    def test_spring_onion_needs_no_alias(self):
+        # The counterpart to the test above, and the reason "spring onion" is
+        # deliberately absent from _USDA_SEARCH_ALIASES. Verified live: FDC
+        # returns 170005 FIRST for a plain "spring onion" query, because that
+        # description literally contains "spring" - so #54's ALL-word filter
+        # resolves it with no help, and an alias would change nothing while
+        # raising the required-word count from 2 to 4. This asserts the
+        # unaliased path keeps working, so that decision is a recorded one
+        # rather than an omission someone later "fixes" by adding an entry.
+        self.assertNotIn("spring onion", app._USDA_SEARCH_ALIASES)
+        self.assertEqual(app._usda_grams_per_unit("spring onion", ["cup"]), 100.0)
+
+    def test_bell_pepper_tbsp_portion_also_resolves(self):
+        # The same alias path works for tbsp, not just cup. FDC spells
+        # 170108's tablespoon modifier out in full ("tablespoon"), which
+        # bare "tbsp" is not a substring of - so this has to go through
+        # _USDA_MEASURE_WORDS, the same expansion resolve_purchase_amount
+        # does in production. Passing ["tbsp"] directly asserts on a call
+        # shape that never happens and fails on the spelled-out modifier.
+        # (A *tsp* lookup would find no match on this entry: it has no
+        # teaspoon portion - an existing data gap, unrelated to #58.)
+        self.assertEqual(
+            app._usda_grams_per_unit("bell pepper", app._USDA_MEASURE_WORDS["tbsp"]), 9.3
+        )
+
+    def test_measure_words_list_both_spellings(self):
+        # Guards the internal consistency of _USDA_MEASURE_WORDS: the portion
+        # lookup is a plain substring test against FDC's modifier text, which
+        # is spelled inconsistently between foods - sometimes the abbreviation
+        # ("tsp"), sometimes spelled out ("teaspoon") - so every canonical unit
+        # must list both forms or one of them silently resolves to no estimate.
+        #
+        # Scope this honestly: it checks a constant against itself, so it does
+        # NOT detect FDC changing its modifier vocabulary. Only the live tier
+        # can do that. What it does catch is a new unit being added with only
+        # one spelling, which is the easy mistake to make and the one that
+        # fails silently.
+        #
+        # "tablespoon" is deliberately not asserted here - it is already
+        # covered end-to-end by test_bell_pepper_tbsp_portion_also_resolves,
+        # which builds its call from _USDA_MEASURE_WORDS["tbsp"]. "teaspoon"
+        # is asserted because no other test exercises the spelled-out tsp form.
+        for unit, words in app._USDA_MEASURE_WORDS.items():
+            self.assertIn(unit, words, f"{unit} must match its own abbreviation")
+        self.assertIn("teaspoon", app._USDA_MEASURE_WORDS["tsp"])
+
     def test_unrelated_word_does_not_match(self):
         self.assertIsNone(app._usda_grams_per_unit("xyzzynotafood", ["cup"]))
 
@@ -248,15 +401,43 @@ class LiveUsdaApiTests(unittest.TestCase):
         self.assertEqual(app._usda_grams_per_unit("flour", ["cup"]), 125.0)
 
     def test_sugar_is_granulated_sugar(self):
-        # "Sugars, granulated" (SR Legacy, fdcId 169655) -> 1 cup = 200g -
-        # not "Sugar, turbinado" (fdcId 170674), the old code's real top
-        # match for a bare "sugar" query.
+        # #58 follow-up: FDC added a newer "Sugars, granulated" entry
+        # (fdcId 746784) that now top-ranks the alias query; it carries no
+        # cup portion data, so the multi-candidate fallback must keep going
+        # to the SR Legacy entry (169655) -> 1 cup = 200g. Not "Sugar,
+        # turbinado" (170674), the old code's real top match for a bare
+        # "sugar" query. (Before this FDC change, 169655 ranked first and
+        # was hit directly - same correct food either way.)
         self.assertEqual(app._usda_grams_per_unit("sugar", ["cup"]), 200.0)
 
     def test_black_pepper_phrase_also_resolves_correctly(self):
         # A multi-word ingredient name close to how a recipe would
         # actually phrase it, not just the bare single word.
         self.assertEqual(app._usda_grams_per_unit("black pepper", ["tsp"]), 2.3)
+
+    def test_bell_pepper_gets_a_real_estimate(self):
+        # #58: live check that "bell pepper" resolves to
+        # "Peppers, sweet, red, raw" (170108) -> 1 cup sliced = 92g (first cup portion in real FDC order).
+        # Before the alias this returned None on real FDC data because the
+        # top-ranked "Peppers, bell, red, raw" entry has no cup portion.
+        self.assertEqual(app._usda_grams_per_unit("bell pepper", ["cup"]), 92.0)
+
+    def test_red_bell_pepper_gets_a_real_estimate(self):
+        self.assertEqual(app._usda_grams_per_unit("red bell pepper", ["cup"]), 92.0)
+
+    def test_green_bell_pepper_gets_a_real_estimate(self):
+        # "Peppers, sweet, green, raw" (170427) -> 1 cup chopped = 149g.
+        self.assertEqual(app._usda_grams_per_unit("green bell pepper", ["cup"]), 149.0)
+
+    def test_green_onion_gets_a_real_estimate(self):
+        # #58: live check that "green onion" resolves to "Onions, spring or
+        # scallions (includes tops and bulb), raw" (170005) -> 1 cup chopped
+        # = 100g - not the greens-only "Onions, young green, tops only"
+        # (170006, 71g/cup) that a plain search top-ranks.
+        self.assertEqual(app._usda_grams_per_unit("green onion", ["cup"]), 100.0)
+
+    def test_spring_onion_gets_a_real_estimate(self):
+        self.assertEqual(app._usda_grams_per_unit("spring onion", ["cup"]), 100.0)
 
 
 if __name__ == "__main__":

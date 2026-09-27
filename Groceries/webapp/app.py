@@ -1504,6 +1504,61 @@ _USDA_SEARCH_ALIASES = {
     "sugar": "sugar granulated",
     "white sugar": "sugar granulated",
     "granulated sugar": "sugar granulated",
+    # #58: recipe vocabulary that FDC's own descriptions don't use. Verified
+    # against the live FDC API (not assumed): a plain "bell pepper" search
+    # top-ranks the newer "Peppers, bell, {color}, raw" entries (fdcId
+    # 2258588-91) - correct food, but they carry no cup/tbsp portion data at
+    # all (only an unmodified ~85g RACC portion), so the ALL-word filter
+    # passes them and the portion loop finds nothing -> no estimate.
+    #
+    # This is NOT a re-ranking problem. The entry that does have usable cup
+    # data - "Peppers, sweet, red, raw" (170108) - is absent from a plain
+    # "bell pepper" search entirely: the live top-10 is the four
+    # "Peppers, bell, *" entries plus six "TACO BELL" branded items. So the
+    # alias has to issue a *different* query, not reorder the same one.
+    # "peppers sweet red raw" surfaces 170108 and lands on it.
+    #
+    # It resolves to 92g/cup, not 149g: FDC's real portion order for 170108
+    # puts "cup, sliced" before "cup, chopped" and the portion loop takes the
+    # first modifier match. Green (170427) has the opposite order and so
+    # returns 149g/cup - a 62% red/green divergence for the same vegetable
+    # that comes purely from FDC's per-entry ordering. Deliberately not
+    # resolved here (#78 owns the first-match-wins policy for every
+    # ingredient, not just peppers); fixing it in this PR would be an
+    # unrelated change to a heuristic that needs auditing against real data.
+    #
+    # Yellow's equivalent (169383) has no cup/tbsp data in real FDC data
+    # either - verified: aliasing "yellow bell pepper" to "peppers sweet
+    # yellow raw" still returns None - so it is deliberately NOT aliased. A
+    # missing estimate beats guessing at one, and an alias that changes
+    # nothing would only look like coverage.
+    "bell pepper": "peppers sweet red raw",
+    "red bell pepper": "peppers sweet red raw",
+    "green bell pepper": "peppers sweet green raw",
+    # "green onion": FDC's entry is "Onions, spring or scallions (includes
+    # tops and bulb), raw" (170005) - it never says "green".
+    #
+    # Before this alias, "green onion" did NOT fail safe. It resolved to
+    # "Onions, young green, tops only" (170006) and returned 71g/cup - the
+    # greens-only product, a *silently wrong* estimate rather than a missing
+    # one, which is the failure mode this codebase is supposed to avoid. #58
+    # was filed on the assumption that this case produced no estimate; it
+    # produced a wrong one. The alias lands on 170005 (100g/cup chopped).
+    #
+    # "raw" is load-bearing - it excludes the canned/frozen/freeze-dried/
+    # sauteed entries. "tops" and "bulb" are deliberately NOT included:
+    # verified live that "onion spring scallion raw" already yields 170005 as
+    # the sole identity-confirmed candidate, so they add no disambiguation,
+    # and every extra required word is one more way an FDC rewording silently
+    # regresses this to None.
+    #
+    # "spring onion" is deliberately NOT aliased, despite #58 suggesting it:
+    # verified live that it already resolves to 170005 (100g/cup) with no
+    # alias at all, because "spring" appears in that description and #54's
+    # filter lands it. Adding it would be a no-op that raised the required-
+    # word count from 2 to 4 - a speculative entry, which CONTRIBUTING §6
+    # forbids in these tables.
+    "green onion": "onion spring scallion raw",
 }
 
 
