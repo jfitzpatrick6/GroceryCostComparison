@@ -380,6 +380,10 @@ Two gotchas:
 - `webapp` — Flask app served by gunicorn on `0.0.0.0:5000`, published to the
   host, running as uid 10001. Has a `/healthz` healthcheck and waits on `db`
   with `condition: service_healthy`.
+- `db_backup` — `postgres:16` image running `Groceries/backup.sh` in a loop
+  (nightly `pg_dump`, #60). Runs as uid 1000 so dumps on the host are manageable
+  without sudo; overriding the image's entrypoint also skips its `gosu postgres`
+  privilege drop, so the `user:` line is what keeps it non-root.
 
 The webapp is reachable from the LAN and, via the host's own `tailscale0`
 interface, from the tailnet. It has **no authentication** — that is a deliberate
@@ -387,7 +391,16 @@ documented tradeoff (issue #35), not an oversight. Never publish this port to
 the public internet. If that ever becomes necessary, put a real reverse proxy
 with auth in front of it; don't bolt auth onto Flask.
 
-**There is no backup mechanism.** Recipes and meal history exist only in the
-`db_data` volume and are not re-derivable. Treat any change touching that volume
-or running a destructive migration as needing extra care, and get the backup
-issue done before trusting this with real household data.
+**Backups.** The `db_backup` service (#60) runs `pg_dump` nightly at 03:30 UTC to
+`backups/` at the repo root — a host bind mount, deliberately outside the
+`db_data` volume. It excludes `grocery_prices` *rows* by default
+(`BACKUP_INCLUDE_PRICES=false`), since that table is regenerable and otherwise
+dominates the dump; recipes, meal plans, cook history, pantry, list and profiles
+are always included. **Read README's "Backups and restore" before touching
+anything that could lose data** — in particular, restoring over an existing
+database requires dropping the schema first, because the dump is taken without
+`--clean` and contains no `DROP` statements.
+
+Even with backups, treat any change touching `db_data` or running a destructive
+migration as needing extra care: a nightly dump is up to 24 hours of loss, and the
+restore path is a manual procedure, not an automatic one.

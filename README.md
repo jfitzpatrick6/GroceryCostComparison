@@ -122,21 +122,32 @@ Dumps older than `BACKUP_KEEP_DAYS` (default 14) are pruned automatically. Each 
 docker compose logs --tail 20 db_backup
 ```
 
-A backup nobody has restored is a hypothesis, not a backup. **To restore:**
+A backup nobody has restored is a hypothesis, not a backup. **To restore over an existing database:**
 
 ```
 # 1. stop the app so nothing writes mid-restore
 docker compose stop webapp scraper_scheduler
 
-# 2. load the dump into the existing database
+# 2. clear the old schema. REQUIRED, not optional: the dump is taken without
+#    --clean, so it contains CREATE statements and no DROPs. Restoring over
+#    existing tables aborts on the first object ("relation ... already exists"),
+#    and -v ON_ERROR_STOP=1 below makes that abort the whole restore.
+docker compose exec -T db psql -U user -d grocery_db \
+  -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+
+# 3. load the dump
 gunzip -c backups/grocery_db-YYYYMMDD-HHMMSS.sql.gz \
   | docker compose exec -T db psql -U user -d grocery_db -v ON_ERROR_STOP=1
 
-# 3. bring the app back
+# 4. bring the app back
 docker compose start webapp scraper_scheduler
 ```
 
-Restore into a *fresh* volume instead by starting `db` alone and running the same `psql` line against it.
+Keep `ON_ERROR_STOP=1`. Without it a failure partway through leaves a *silently* partial restore, which is much worse than a loud one — you'd discover it weeks later as missing recipes rather than now as an error message.
+
+Step 2 is destructive, which is the point of a restore, but check you have the dump you think you have before running it (`gunzip -c <file> | grep -c "^COPY"` should be non-zero).
+
+To restore into a **fresh** volume instead — a new host, or after losing `db_data` — start `db` alone (`docker compose up -d db`), wait for it to report healthy, and run only step 3. There is no schema to drop, and `init_schema.py` will not have run yet, so the dump supplies everything.
 
 **What is and isn't in a dump.** By default `BACKUP_INCLUDE_PRICES=false`, which excludes the *rows* of `grocery_prices` while keeping its schema and the `grocery_prices_latest` view. That keeps dumps in the kilobytes instead of the gigabytes (~17M price rows/year) and is safe because prices are the one thing here the scraper can regenerate. The tradeoff is real, though: **restoring loses price history**, so anything depending on past prices starts again from the next scrape. Recipes, ingredients, meal plans, cook history, pantry, grocery list and profiles are always included - those cannot be regenerated. Set `BACKUP_INCLUDE_PRICES=true` in the compose file if you'd rather have complete dumps; every log line states which mode ran.
 

@@ -119,6 +119,12 @@ services:
       - ./backup.sh:/backup.sh:ro
     networks:
       - my_network
+    # Overriding the postgres image's entrypoint also skips its `gosu postgres`
+    # privilege drop, so without this the container runs as root and every dump
+    # lands on the host as root:root - readable by the household user but not
+    # deletable without sudo. Matching the host uid keeps the backups directory
+    # manageable and is consistent with the webapp's uid 10001 (#71).
+    user: "1000:1000"
     entrypoint: ["/bin/bash", "/backup.sh"]
     restart: unless-stopped
 
