@@ -361,11 +361,25 @@ Two gotchas:
 ## 12. Docker and services
 
 - `db` — Postgres 16, data in the `db_data` volume. Not published to the host.
-- `grocery_scraper` — one-shot; runs `collector.py` and exits.
+  Has a `pg_isready` healthcheck; **the `-h 127.0.0.1` flag is load-bearing**,
+  because without it pg_isready probes the unix socket, which the image's
+  *temporary* initdb server also listens on — so it reports ready ~2s before the
+  real server is, and clients connecting in that window are refused.
+- `grocery_scraper` — one-shot; runs `collector.py` and exits. Connects once with
+  no retry and has no `restart:` policy, so it is the service most exposed to a
+  database that isn't really ready yet.
 - `scraper_scheduler` — same image, runs cron in the foreground (daily 03:00).
-  Long-running. **Not started by a bare `docker compose up`** — start it
-  explicitly or prices silently go stale.
-- `webapp` — Flask on `0.0.0.0:5000`, published to the host.
+  Long-running. **It IS started by a bare `docker compose up -d`** — there is no
+  `profiles:` key in the file, so compose starts every service. An earlier
+  revision of this document (and of the compose comment) claimed otherwise, which
+  is why the dev host was found running `db` and `webapp` with no scheduler and
+  41-day-old prices: README documents naming services explicitly, and that is
+  what actually decides what runs. The flip side is the real footgun — a bare
+  `up -d` *also* starts the one-shot scraper and kicks off a ~20-minute scrape.
+  #63 owns fixing both by profiling the one-shot.
+- `webapp` — Flask app served by gunicorn on `0.0.0.0:5000`, published to the
+  host, running as uid 10001. Has a `/healthz` healthcheck and waits on `db`
+  with `condition: service_healthy`.
 
 The webapp is reachable from the LAN and, via the host's own `tailscale0`
 interface, from the tailnet. It has **no authentication** — that is a deliberate

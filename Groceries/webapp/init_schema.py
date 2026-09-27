@@ -9,13 +9,15 @@ DuplicateTable and UniqueViolation on the pg_class/pg_type catalog indexes.
 Running it here, before any worker exists, removes the race entirely rather than
 trying to win it.
 
-Retries instead of failing fast, because the database may still be starting:
-docker-compose's `depends_on` waits for the db *container* to start, not for
-Postgres to accept connections (#71 adds a real healthcheck; until then this is
-what bridges the gap). It gives up loudly once the budget is spent - a container
-that starts serving with no schema is worse than one that exits and gets
-restarted by `restart: unless-stopped`, because the first presents as a mystery
-500 on every page while the second is visible in `docker ps`.
+Retries instead of failing fast, because the database may still be starting.
+Since #71 the webapp waits on `depends_on: {db: {condition: service_healthy}}`,
+so in the normal path Postgres is already accepting connections by the time this
+runs - the retry loop is belt-and-braces for the cases that gate does not cover
+(a manual `docker compose run`, a db that becomes unhealthy again mid-startup, or
+someone running this script by hand). It gives up loudly once the budget is spent
+- a container that starts serving with no schema is worse than one that exits and
+gets restarted by `restart: unless-stopped`, because the first presents as a
+mystery 500 on every page while the second is visible in `docker ps`.
 
 Run directly for a manual one-off against an existing database; it is idempotent.
 """

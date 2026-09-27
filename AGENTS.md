@@ -103,7 +103,7 @@ Written 2026-09-27. The tracker moves; check the issues.
   startup via `init_schema.py` (#61, #71, #82). It still has **no auth or CSRF
   protection**, **no error handlers**, **no flash messaging**, and **no
   backups**.
-- `app.py` (~1,900 lines of routes and domain logic) is **mostly untested**.
+- `app.py` (~2,000 lines of routes and domain logic) is **mostly untested**.
   `test_app_health.py` and `test_app_schema.py` cover the health probe and
   schema-creation ordering; the routes, planner math, pantry depletion and
   package-fit costing are not covered (#70).
