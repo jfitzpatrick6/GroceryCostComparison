@@ -149,11 +149,18 @@ def store_data(df):
                 # price isn't NUMERIC yet, and a rewrite rebuilds every index
                 # on the table - building afterwards avoids building it twice.
                 # IF NOT EXISTS makes every scrape after the first a no-op;
-                # not CONCURRENTLY because that can't run in a transaction,
-                # and the plain form's SHARE lock only blocks writers of this
-                # table (the scraper is the only one) - webapp reads are
-                # unaffected. Build cost measured: 190 ms at 46k rows, 9.3 s
-                # at 4.2M.
+                # not CONCURRENTLY because that can't run in a transaction.
+                # The plain form takes only a SHARE lock on this table, which
+                # blocks writers (the scraper is the only one) and not readers -
+                # but that is a statement about THIS statement, not about the
+                # transaction it sits in. This block opens with ADD COLUMN IF NOT
+                # EXISTS and an ALTER COLUMN TYPE, and those take
+                # AccessExclusiveLock even when they change nothing (measured on
+                # postgres:16, and recorded in CONTRIBUTING §8), so a concurrent
+                # webapp read CAN block here for the duration. Pre-existing
+                # behaviour, not introduced by the index; #66 removes the whole
+                # category by moving DDL out of the request path and into
+                # startup. Build cost measured: 190 ms at 46k rows, 9.3 s at 4.2M.
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_grocery_prices_product_store_datetime
                     ON grocery_prices (product, store, datetime DESC);

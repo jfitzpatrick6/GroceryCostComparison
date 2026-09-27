@@ -28,18 +28,27 @@ import retention
 class RecordingCursor:
     """Stand-in for a psycopg2 cursor that records what it was asked to run.
 
-    This is a call recorder, not a data fixture - the only thing under test is
-    *whether* prune() reaches SQL at all and with which window, so it never
-    needs to return rows. `rowcount` stays 0, which is what a real cursor
-    reports for a DELETE that removed nothing.
+    This is a call recorder, not a data fixture - the thing under test is
+    *whether* prune() reaches SQL at all, and with which window. `rowcount` stays
+    0, which is what a real cursor reports for a DELETE that removed nothing.
+
+    `fetchone` exists because prune() asks the database one question before
+    deleting anything: is the newest row dated in the future? `future_dated`
+    drives the answer so a test can exercise that guard without a database. It
+    defaults to False - a sane clock - which is what every test not about the
+    guard wants.
     """
 
-    def __init__(self):
+    def __init__(self, future_dated=False):
         self.executed = []
         self.rowcount = 0
+        self.future_dated = future_dated
 
     def execute(self, sql, params=None):
         self.executed.append((sql, params))
+
+    def fetchone(self):
+        return (self.future_dated,)
 
 
 class RetentionDaysTests(unittest.TestCase):
@@ -82,13 +91,14 @@ class RetentionDaysTests(unittest.TestCase):
 
 
 class PruneGuardsTests(unittest.TestCase):
-    def prune_with_env(self, value):
+    def prune_with_env(self, value, future_dated=False):
         """Call retention.prune() with PRICE_HISTORY_RETENTION_DAYS set to
-        `value`, or removed from the environment entirely when value is None."""
+        `value`, or removed from the environment entirely when value is None.
+        `future_dated` is what the cursor reports for the clock guard."""
         env = {k: v for k, v in os.environ.items() if k != retention.RETENTION_DAYS_ENV}
         if value is not None:
             env[retention.RETENTION_DAYS_ENV] = value
-        cursor = RecordingCursor()
+        cursor = RecordingCursor(future_dated=future_dated)
         with mock.patch.dict(os.environ, env, clear=True):
             deleted = retention.prune(cursor)
         return deleted, cursor
@@ -106,30 +116,76 @@ class PruneGuardsTests(unittest.TestCase):
 
     def test_unset_env_prunes_with_the_default_window(self):
         _, cursor = self.prune_with_env(None)
-        self.assertEqual(len(cursor.executed), 1)
-        self.assertEqual(cursor.executed[0][1], (retention.DEFAULT_RETENTION_DAYS,))
+        # The default is asserted as a LITERAL, not against
+        # retention.DEFAULT_RETENTION_DAYS. Comparing the constant to itself
+        # passes no matter what the constant is set to, so it could never notice
+        # the documented 30-day policy silently becoming 90 - and 30 is the
+        # judgment call this whole module most needs pinned down, since raising
+        # it later only keeps more data from that point forward.
+        self.assertEqual(retention.DEFAULT_RETENTION_DAYS, 30)
+        self.assertEqual(len(cursor.executed), 2, "expected the clock guard then the DELETE")
+        self.assertEqual(cursor.executed[1][1], (30,))
 
     def test_configured_window_is_the_one_passed_to_the_delete(self):
-        _, cursor = self.prune_with_env("30")
-        self.assertEqual(cursor.executed[0][1], (30,))
+        _, cursor = self.prune_with_env("45")
+        self.assertEqual(cursor.executed[1][1], (45,))
 
     def test_cutoff_is_derived_from_the_table_rather_than_a_clock(self):
         # The invariant behind anchoring on max(datetime): the scraper writes
         # naive local timestamps while now()::timestamp is rendered in the
         # Postgres container's TimeZone, and those two clocks need not agree.
         # A wall-clock cutoff would quietly move the window by the offset.
-        sql = self.prune_with_env("30")[1].executed[0][0].lower()
-        self.assertIn("max(datetime)", sql)
-        self.assertNotIn("now()", sql)
-        self.assertNotIn("current_timestamp", sql)
+        #
+        # Asserted against the DELETE specifically (executed[1]), not the whole
+        # statement list: the clock guard at executed[0] legitimately *does* use
+        # now(), because it is asking "is the data ahead of the wall clock" -
+        # which is a different question from "which rows are old enough to drop".
+        delete_sql = self.prune_with_env("30")[1].executed[1][0].lower()
+        self.assertIn("delete from grocery_prices", delete_sql)
+        self.assertIn("max(datetime)", delete_sql)
+        self.assertNotIn("now()", delete_sql)
+        self.assertNotIn("current_timestamp", delete_sql)
 
     def test_prune_touches_grocery_prices_and_nothing_else(self):
         # #65's warning, kept as a net: prices are re-scrapable, recipes and
         # cooked-meal history are not, so this is the only DELETE the repo
         # contains and it must stay aimed at one table.
-        sql = self.prune_with_env("30")[1].executed[0][0]
+        sql = self.prune_with_env("30")[1].executed[1][0]
         self.assertEqual(sql.upper().count("DELETE"), 1)
         self.assertIn("grocery_prices", sql)
+
+    def test_a_future_dated_row_stops_the_prune_entirely(self):
+        """The guard against deleting the whole table.
+
+        The cutoff is `max(datetime) - window` with no ceiling, so one
+        forward-dated row drags the cutoff into the future and the DELETE matches
+        everything. Measured against a real postgres:16 before this guard
+        existed: 30 rows of good daily history plus one row dated +400 days went
+        31 -> 1, logged as an ordinary success. Reachable without any bug here,
+        because the scraper stamps rows with the *host* clock - WSL/Hyper-V skew
+        after sleep, a VM snapshot restore, a dead CMOS battery.
+
+        Asserted as "the DELETE is never issued at all" rather than "fewer rows
+        deleted", because a guard that runs the DELETE with a safer cutoff would
+        still be guessing; refusing is the behaviour this module promises
+        everywhere else.
+        """
+        deleted, cursor = self.prune_with_env("30", future_dated=True)
+        self.assertEqual(deleted, 0)
+        self.assertEqual(len(cursor.executed), 1, "only the guard query should have run")
+        self.assertNotIn("DELETE", cursor.executed[0][0].upper())
+
+    def test_a_sane_clock_still_prunes(self):
+        # The other half of the guard: it must not become a way for pruning to
+        # silently stop happening forever, which would reintroduce the unbounded
+        # growth #65 exists to fix.
+        deleted, cursor = self.prune_with_env("30", future_dated=False)
+        self.assertEqual(len(cursor.executed), 2)
+        self.assertIn("DELETE", cursor.executed[1][0].upper())
+        # prune() returns the cursor's rowcount, which this recorder leaves at 0;
+        # asserting the call shape is the point, and the real row counts are
+        # covered by the collector-level checks in the PR description.
+        self.assertEqual(deleted, cursor.rowcount)
 
 
 if __name__ == "__main__":

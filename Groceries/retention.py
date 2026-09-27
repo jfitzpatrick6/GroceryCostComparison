@@ -146,6 +146,48 @@ def prune(cur):
         print(f"[retention] disabled ({RETENTION_DAYS_ENV}={days}) - keeping grocery_prices history unbounded.")
         return 0
 
+    # Fail closed on a suspect clock. The cutoff is `max(datetime) - window`,
+    # which has no ceiling: if the newest row is dated in the future, the cutoff
+    # moves into the future with it and the DELETE takes the entire table. One
+    # forward-dated row is enough - measured, 30 rows of good daily history plus
+    # a single row dated +400 days went 31 -> 1, and it logged as an ordinary
+    # success rather than an anomaly.
+    #
+    # Reachable without any bug in this module: get_data() stamps the whole frame
+    # with pd.Timestamp.now() from the *scraper* container, so the trigger is the
+    # host clock being more than the retention window ahead - WSL/Hyper-V skew
+    # after sleep, a VM snapshot restore, a dead CMOS battery, a manual `date -s`.
+    # grocery_prices is re-scrapable, which bounds the damage, but it is also the
+    # one table the nightly backup excludes by default (#60,
+    # BACKUP_INCLUDE_PRICES=false), so there is no copy to come back to - and
+    # this runs unattended on a host nobody watches.
+    #
+    # A one-day grace rather than zero because the scraper stamps local time while
+    # `now()` here renders in the Postgres container's TimeZone, so a small
+    # legitimate offset between them is expected. Anything past a day is not a
+    # timezone, it is a wrong clock.
+    #
+    # Capping with LEAST(max(datetime), now()) would also work, but it would
+    # silently prune against a clock this module otherwise deliberately does not
+    # depend on - see the docstring for why the cutoff is anchored on the data.
+    # Refusing is more in keeping with the rest of this file: no guessing.
+    cur.execute(
+        "SELECT max(datetime) > now()::timestamp + interval '1 day' FROM grocery_prices"
+    )
+    if cur.fetchone()[0]:
+        print("[retention] newest grocery_prices row is dated more than a day in the future - "
+              "refusing to prune on a suspect clock, because the cutoff would move into the "
+              "future and delete everything. Deleting nothing; check the host clock.")
+        return 0
+
+    # Note what this does NOT prune: rows with a NULL datetime. `NULL < cutoff`
+    # evaluates to NULL, not true, so they never match and would accumulate
+    # forever - a hole in the bound #65 asks for, though not a deletion risk.
+    # Unreachable today because get_data() stamps every row with
+    # pd.Timestamp.now() unconditionally. Left alone rather than adding an
+    # `OR datetime IS NULL` that would delete rows whose age is genuinely
+    # unknown; if a future writer can produce NULLs, that is the moment to
+    # decide it deliberately.
     cur.execute(
         """
         DELETE FROM grocery_prices
