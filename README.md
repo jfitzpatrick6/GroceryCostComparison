@@ -112,6 +112,36 @@ Everything lands in a single `grocery_prices` table in the `grocery_db` Postgres
 
 Every scrape appends new rows rather than overwriting, so there's a real history in the table. `grocery_prices_latest` is a view with just the most recent row per product/store - query that instead of the raw table unless you actually want history.
 
+## Backups and restore
+
+The `db_backup` service runs `pg_dump` every night at **03:30 UTC** - deliberately after the 03:00 scrape - and writes gzip'd dumps to `backups/` at the repo root. That is a **host bind mount, outside the `db_data` volume**, because a backup stored inside the thing it backs up is not a backup. It survives `docker compose down -v`.
+
+Dumps older than `BACKUP_KEEP_DAYS` (default 14) are pruned automatically. Each attempt logs a timestamped `OK`/`FAILED` line, so check whether backups are actually happening with:
+
+```
+docker compose logs --tail 20 db_backup
+```
+
+A backup nobody has restored is a hypothesis, not a backup. **To restore:**
+
+```
+# 1. stop the app so nothing writes mid-restore
+docker compose stop webapp scraper_scheduler
+
+# 2. load the dump into the existing database
+gunzip -c backups/grocery_db-YYYYMMDD-HHMMSS.sql.gz \
+  | docker compose exec -T db psql -U user -d grocery_db -v ON_ERROR_STOP=1
+
+# 3. bring the app back
+docker compose start webapp scraper_scheduler
+```
+
+Restore into a *fresh* volume instead by starting `db` alone and running the same `psql` line against it.
+
+**What is and isn't in a dump.** By default `BACKUP_INCLUDE_PRICES=false`, which excludes the *rows* of `grocery_prices` while keeping its schema and the `grocery_prices_latest` view. That keeps dumps in the kilobytes instead of the gigabytes (~17M price rows/year) and is safe because prices are the one thing here the scraper can regenerate. The tradeoff is real, though: **restoring loses price history**, so anything depending on past prices starts again from the next scrape. Recipes, ingredients, meal plans, cook history, pantry, grocery list and profiles are always included - those cannot be regenerated. Set `BACKUP_INCLUDE_PRICES=true` in the compose file if you'd rather have complete dumps; every log line states which mode ran.
+
+Verified end to end, not assumed: seeded a recipe (with an apostrophe in its name), ingredients in order, pantry, list, profile, a cooked meal-plan slot and a `cook_depletions` row, plus 5,000 price rows; dumped; restored into a **fresh** `postgres:16`; and confirmed every household row came back byte-identical, `grocery_prices` came back as an empty table with its view intact, and pruning removed a 30-day-old dump while leaving a 2-day-old one and an unrelated file alone.
+
 ## Repo layout
 
 - `Groceries/` - the scrapers, shared unit-conversion helper, and Docker setup; everything above applies to what's in here
