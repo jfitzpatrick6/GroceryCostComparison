@@ -100,10 +100,12 @@ ignore = [
 # and removed it.
 
 [tool.pytest.ini_options]
-# Tests live next to the code they cover in Groceries/webapp/ and import it
-# directly (`import app`, `import matching`). There is no __init__.py there, so
-# pytest's default prepend import mode puts that directory on sys.path - which
-# is what makes those bare imports resolve from the repo root.
-testpaths = ["Groceries/webapp"]
+# Tests live next to the code they cover and import it directly (`import app`,
+# `import matching`, `import retention`). There is no __init__.py anywhere, so
+# pytest's default prepend import mode puts each test file's own directory on
+# sys.path - which is what makes those bare imports resolve from the repo root.
+# "Groceries" is the collection root for the scraper-side tests (#65) and
+# recurses into Groceries/webapp/, so listing webapp separately is redundant.
+testpaths = ["Groceries"]
 python_files = ["test_*.py"]
 addopts = "-ra"

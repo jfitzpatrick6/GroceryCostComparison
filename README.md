@@ -29,11 +29,13 @@ ALDIS_STORE=
 BJS_STORE=1234
 WALMARTSTORE=1234
 USDA_API_KEY=
+PRICE_HISTORY_RETENTION_DAYS=
 ```
 
 - `TOPS_STORE` / `ALDIS_STORE` can be left blank for now - they're not used yet (see the table above and #43).
 - `BJS_STORE` / `WALMARTSTORE` need real store ids for those chains. BJs' id shows up in that chain's own site network requests; Walmart's scraper doesn't currently work regardless of what's set here (see above).
 - `USDA_API_KEY` is for the webapp's recipe-ingredient unit conversion ("2 cups flour" -> a purchase-unit estimate) - get a free key at https://fdc.nal.usda.gov/api-key-signup. Optional; that one feature just won't produce estimates without it.
+- `PRICE_HISTORY_RETENTION_DAYS` is optional: how many days of raw price history each scrape keeps, blank for the default of 30. Set it to `0` to keep everything and let the table grow without bound - see [What gets written](#what-gets-written) for what that costs. A value that isn't a whole number of days (`90days`) prunes nothing for that run and says so in the scrape log, rather than falling back to the default and deleting history nobody meant to lose.
 
 **Do not commit a filled-in `.env`.** Store ids are location-identifying. `.env` is already gitignored - keep it that way.
 
@@ -110,7 +112,11 @@ Everything lands in a single `grocery_prices` table in the `grocery_db` Postgres
 | `unit_price` | Same as `rate` but numeric, for comparing/sorting |
 | `unit` | Unit `unit_price` is in: `lb`, `gal`, `each`, or `ft` |
 
-Every scrape appends new rows rather than overwriting, so there's a real history in the table. `grocery_prices_latest` is a view with just the most recent row per product/store - query that instead of the raw table unless you actually want history.
+Every scrape appends new rows rather than overwriting, so the table holds a rolling window of real history rather than growing forever (#65). At the end of each scrape the collector deletes rows older than `PRICE_HISTORY_RETENTION_DAYS` (default 30), measured back from the newest row in the table - so a pipeline that has been down for a month keeps its last window of history instead of being pruned to nothing, and a run that can't work the cutoff out safely deletes nothing at all. One full snapshot is ~46,500 rows, which is why the window exists: unbounded, the daily schedule reaches ~17M rows / ~3 GB in a year. It's 30 days rather than 90 because reading the latest price per product/store means walking every historical row however well it's indexed - measured on synthetic data matched to the real distribution, the full catalog read that `/list` and `/list/where-to-buy` make takes ~1s at a 30-day window (1.4M rows) and ~3s at a 90-day window (4.2M rows). Raise the setting if you want a longer history and can spend the latency; rows an earlier run already deleted don't come back.
+
+Retention applies to `grocery_prices` and nothing else. Prices are re-scrapable - recipes, what's been cooked (`/history`), the pantry and pinned staples are not, and no cleanup job here touches them.
+
+`grocery_prices_latest` is a view with just the most recent row per product/store - query that instead of the raw table unless you actually want history. The scraper maintains an index on `grocery_prices (product, store, datetime DESC)` for it; without one, every read of the view scans the whole table and spills an external merge sort to disk (it already does at a single 46k-row scrape).
 
 ## Backups and restore
 
