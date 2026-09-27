@@ -96,8 +96,12 @@ Written 2026-09-27. The tracker moves; check the issues.
   works via direct API.
 - Tops/Aldi **cannot be pointed at a chosen store** yet (#43) — they use
   whatever the host's network location IP-geolocates to.
-- `grocery_prices` has **no indexes and no retention policy**, and the
-  `grocery_prices_latest` view full-sorts the whole table on every query.
+- `grocery_prices` is indexed on `(product, store, datetime DESC)` and pruned to
+  a rolling window (#65), so `grocery_prices_latest` no longer full-sorts and
+  spills to disk. But the read is still **O(every retained row)** — the index
+  removed the sort, not the scan — so retention is what actually holds latency
+  down. The durable fix is #57's catalog cache or a view that doesn't walk
+  history.
 - The webapp is served by **gunicorn** behind a Docker `HEALTHCHECK` on
   `/healthz`, runs as a **non-root** user, and creates its own schema once at
   startup via `init_schema.py` (#61, #71, #82). It still has **no auth or CSRF

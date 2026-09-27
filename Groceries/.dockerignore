@@ -1,10 +1,11 @@
 # Build context for the scraper image (docker-compose `build: .`).
 #
-# The scraper only imports aldis, BJs, tops, Walmart, units, collector and
-# instacart_storefront - so the webapp is excluded entirely. Without this,
-# `COPY . .` shipped all of Groceries/webapp/ (Flask app, templates and tests)
-# into an image that also carries headless Chromium, pandas and Playwright,
-# which is dead weight and misleading about what the image actually runs.
+# The scraper only imports aldis, BJs, tops, Walmart, units, collector,
+# instacart_storefront and retention - so the webapp is excluded entirely.
+# Without this, `COPY . .` shipped all of Groceries/webapp/ (Flask app,
+# templates and tests) into an image that also carries headless Chromium,
+# pandas and Playwright, which is dead weight and misleading about what the
+# image actually runs.
 
 webapp/
 
