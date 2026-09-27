@@ -76,10 +76,13 @@ This is a small Flask app (`Groceries/webapp/`):
 | `/list/where-to-buy` | The payoff feature: cheapest store per list item (accounting for needing to buy whole packages, not just the lowest $/unit), plus a one-store-vs-split-across-stores total comparison |
 | `/history` | What's actually been cooked, with a one-click "make this again" |
 | `/profiles` | Lightweight named household profiles (no password) - attributes who added/checked/cooked what |
+| `/healthz` | JSON health probe for Docker's healthcheck - `200 {"status":"ok"}` when the database answers, `503 {"status":"unhealthy"}` when it doesn't. Not a page; nothing links to it |
 
 More pages/features land as the corresponding GitHub issues get done.
 
 It listens on `0.0.0.0:5000` - reachable over your LAN, and over [Tailscale](https://tailscale.com/) too if the host machine itself is already joined to your tailnet (no sidecar container or `TS_AUTHKEY` needed - the host's own tailscale0 interface covers it). Not meant for the public internet; put it behind your own reverse proxy/auth if you need that. An earlier version of this ran Tailscale as a Docker sidecar with its own tailnet identity, but that added a real failure mode (an unauthenticated sidecar loops on auth retries and restarts, dropping the webapp's network namespace each time it shared one) for no benefit on a host that's already on the tailnet - removed in favor of the simpler setup above.
+
+The container serves through **gunicorn** (2 workers x 4 threads), not Flask's development server - see `Groceries/webapp/Dockerfile` for the flags and the reasoning behind each. For local development without Docker, `python app.py` still works and still uses Flask's built-in server; that path is for iterating on templates, not for running the household's instance.
 
 ## What gets written
 

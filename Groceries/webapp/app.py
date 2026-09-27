@@ -42,6 +42,52 @@ def price_data_available(cur):
     return cur.fetchone()["table_exists"]
 
 
+@app.route("/healthz")
+def healthz():
+    """Liveness/readiness probe (#61). Returns JSON, 200 when the database
+    answers and 503 when it doesn't; #71 will point a Docker HEALTHCHECK at it.
+
+    Checks the database rather than merely answering, because "the Flask
+    process is up but Postgres is unreachable" is the failure state that
+    actually matters here - it's exactly what a webapp restart during db
+    startup looks like, and compose's `depends_on` only waits for the
+    container to start, not for Postgres to accept connections. A probe that
+    only proved the process was alive would report healthy while every page
+    500s.
+
+    Two deliberate properties:
+
+    - It runs **no DDL**. Unlike nearly every other route this does not call
+      an ensure_*_table(), so it stays cheap and side-effect free under a
+      healthcheck that fires every few seconds (see #66 for why the
+      per-request DDL elsewhere is a problem this route must not join).
+    - It returns JSON, not a template. Rendering a template would trigger
+      inject_profile_switcher - a context processor that opens its own
+      connection and runs CREATE TABLE on every render - which would make the
+      healthcheck itself the most expensive thing on the box.
+
+    Returns 503 rather than 200 when the database is unreachable, which is the
+    correct HTTP semantic and what a reverse proxy or a human with curl needs to
+    tell "app is up, database isn't" from "app is fine". Note this is NOT what
+    makes Docker restart the container: a HEALTHCHECK keys off its test
+    command's *exit code*, so the usual `curl -f` treats 503 and an unhandled
+    500 identically. The status distinction is for people and proxies; Docker
+    only learns "not 2xx". (#71 wires up the actual HEALTHCHECK - as of this
+    commit nothing consumes the code yet.)
+    """
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        finally:
+            conn.close()
+    except psycopg2.Error:
+        return {"status": "unhealthy", "database": "unreachable"}, 503
+    return {"status": "ok", "database": "reachable"}, 200
+
+
 def ensure_profiles_table(cur):
     cur.execute("""
         CREATE TABLE IF NOT EXISTS profiles (
