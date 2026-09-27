@@ -926,6 +926,33 @@ DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "
 
 
 def ensure_planner_table(cur):
+    # meal_plan_slots.recipe_id REFERENCES recipes(id), so `recipes` must exist
+    # before this CREATE runs. On a fresh database it did not: /planner called
+    # ensure_planner_table() *before* ensure_recipes_tables(), the CREATE failed
+    # with UndefinedTable, and the aborted transaction rolled back the `recipes`
+    # table created moments later in that same transaction - so nothing persisted
+    # and every subsequent request repeated the identical failure. A first-time
+    # deploy therefore had a permanently broken /planner, /history and seven
+    # other routes (#80). The dev database had been populated for weeks, which is
+    # why this was never hit.
+    #
+    # The dependency is declared here, beside the FK that creates it, rather than
+    # by reordering calls in the nine affected routes: an ordering invariant
+    # spread across call sites is one new route away from breaking again. This is
+    # a deliberate exception to CONTRIBUTING §8's "never add a new
+    # ensure_*_table() call site" - that rule exists to stop DDL being scattered
+    # through request handlers, and putting a schema dependency inside the
+    # function that declares the FK is the opposite of scattering. #66 removes
+    # the whole category by moving schema creation into ordered migrations.
+    #
+    # Idempotent: ensure_recipes_tables is CREATE TABLE IF NOT EXISTS, so once
+    # `recipes` exists this changes nothing. It is NOT free, though - verified
+    # on postgres:16 that CREATE TABLE IF NOT EXISTS against an existing table
+    # still takes an ACCESS EXCLUSIVE lock, so this adds two such locks per
+    # request to the nine routes that call ensure_planner_table. That cost is
+    # #66's to remove (schema created once at startup, not per request); it is
+    # not new to this change, which only moved where the dependency is stated.
+    ensure_recipes_tables(cur)
     # Dinner only for v1 ("dinner first" per #28) - `meal` column exists so
     # breakfast/lunch can be added later without a schema change, but the
     # UI only ever writes 'dinner' for now.
