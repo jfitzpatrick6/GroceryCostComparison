@@ -159,6 +159,8 @@ Verified end to end, not assumed: seeded a recipe (with an apostrophe in its nam
 - `Groceries/webapp/` - the Flask app, its own (much lighter) Dockerfile
 - `Old Report/`, `Testing Attempts/` - earlier experiments, not part of the running pipeline, kept for reference
 
+**Putting this on a real host?** Read **[DEPLOYMENT.md](DEPLOYMENT.md)** - the step-by-step for a first deployment: what `.env` needs (and which variables are actually required), what to look for in the logs, how to check every page against a genuinely fresh database, and how to confirm the backups really restore.
+
 ## Working on this
 
 Everything above is about *using* the app. If you're changing it - human or agent - read **[CONTRIBUTING.md](CONTRIBUTING.md)** first. It's the working agreement: GitHub issues as the source of truth, one branch per issue, PRs with CI green and a second-opinion review, the commit-message convention, the code and testing conventions this repo follows, and the specific lint exemptions (each with its reason). `AGENTS.md` is the short version for AI agents picking the repo up cold.
