@@ -93,13 +93,22 @@ jobs:
         run: pytest -v -k "not Live"
 
       - name: Run live-FDC tests (reported, non-blocking)
-        # `secrets` context, not `env` - a step's own `env:` block isn't visible
-        # to its own `if:`, so testing env.USDA_API_KEY here would always be ''.
-        if: ${{ secrets.USDA_API_KEY != '' }}
         continue-on-error: true
         env:
           USDA_API_KEY: ${{ secrets.USDA_API_KEY }}
-        run: pytest -v -k "Live"
+        # The guard is in the shell, not in an `if:`. GitHub's own guidance for
+        # branching on a secret is to expose it as an env var and test that -
+        # referencing the `secrets` context directly in a step-level `if` was
+        # rejected outright when this was first tried, failing the whole
+        # workflow before any job was created ("This run likely failed because
+        # of a workflow file issue", 0 jobs). This form has no context
+        # subtleties and skips just as cleanly.
+        run: |
+          if [ -z "$USDA_API_KEY" ]; then
+            echo "USDA_API_KEY not set - skipping the live-FDC tier."
+            exit 0
+          fi
+          pytest -v -k "Live"
 
       - name: Report whether live FDC tests ran
         if: always()
