@@ -49,7 +49,7 @@ if not os.getenv("USDA_API_KEY"):
                 if line.startswith("USDA_API_KEY="):
                     os.environ["USDA_API_KEY"] = line.strip().split("=", 1)[1]
 
-import app  # noqa: E402
+import app
 
 
 class _FakeResponse:

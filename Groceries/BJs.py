@@ -1,9 +1,20 @@
-import time
 import re
+
 import pandas as pd
 import requests
 
 from units import calculate_rate_per_unit
+
+# Size/unit vocabulary BJs embeds in product names ("... 16 oz", "Family Pack
+# 2.5 lb"). Was spelled out three times inline in two regexes below; kept as one
+# alternation with no capturing group of its own so the group numbering the
+# callers depend on (match.group(1); calcmatch.group(1)/(3)/(4)) is unchanged.
+_SIZE_UNITS = r"pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt"
+# "16 oz" -> take the whole matched size phrase as-is.
+_SIZE_RE = re.compile(rf"(([\d.]+)\s*({_SIZE_UNITS}))")
+# "5 oz/12 count" style ratios -> multiply the two quantities into one size.
+_SIZE_RATIO_RE = re.compile(rf"([\d.]+)\s*({_SIZE_UNITS}).\/([\d.]+)\s*({_SIZE_UNITS})")
+
 
 def main(store):
     data = []
@@ -17,7 +28,11 @@ def main(store):
         for product in products:
             try:
                 product_name = product['value']
-                facets = {f['name']: f['values'][0] for f in product.get('data', {}).get('facets', []) if f.get('values')}
+                facets = {
+                    f['name']: f['values'][0]
+                    for f in product.get('data', {}).get('facets', [])
+                    if f.get('values')
+                }
 
                 if facets.get('weighted_item') == 'Y':
                     # By-weight items (produce, fresh meat/poultry) don't carry
@@ -45,17 +60,25 @@ def main(store):
                 else:
                     product_price = product['data']['prices'][store]['value']
                     product_price = float(product_price.strip().removeprefix("$"))
-                    match = re.search(r"(([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt))", product_name.lower().replace(',', ''))
+                    name_for_size = product_name.lower().replace(',', '')
+                    match = _SIZE_RE.search(name_for_size)
                     if match:
-                        calcmatch = re.search(r"([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt).\/([\d.]+)\s*(pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt)", product_name.lower().replace(',', ''))
+                        calcmatch = _SIZE_RATIO_RE.search(name_for_size)
                         if calcmatch:
-                            product_size = str(float(calcmatch.group(1).replace(',', '')) * float(calcmatch.group(3).replace(',', ''))) + ' ' + calcmatch.group(4)
+                            total_qty = float(calcmatch.group(1).replace(',', ''))
+                            total_qty *= float(calcmatch.group(3).replace(',', ''))
+                            product_size = f"{total_qty} {calcmatch.group(4)}"
                         else:
                             product_size = match.group(1)
                     else:
                         product_size = 'N/A'
 
-                data.append(pd.DataFrame.from_dict({"Product": [product_name], "Price": [product_price], "Rate": [calculate_rate_per_unit(product_price, product_size)], "Size": [product_size]}))
+                data.append(pd.DataFrame.from_dict({
+                    "Product": [product_name],
+                    "Price": [product_price],
+                    "Rate": [calculate_rate_per_unit(product_price, product_size)],
+                    "Size": [product_size],
+                }))
             except Exception as e:
                 print(e)
                 print(product)
