@@ -6,3 +6,19 @@ walmart_search.json
 *.pyc
 .env
 1.env
+
+# Local dev/test virtualenv. The host Python version often differs from the
+# containers' (scraper 3.10, webapp 3.12), so this is per-machine and never
+# committed - see CONTRIBUTING.md §11 for why the pinned psycopg2 can't always
+# be installed into it.
+.venv/
+
+# Rotated/derived env files (e.g. .env.local, .env.production). Both
+# .dockerignore files already refuse to bake these into an image; this keeps
+# them out of git as well. Store ids are location-identifying and API keys must
+# be rotatable without a code change - see CONTRIBUTING.md §9.
+.env.*
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/

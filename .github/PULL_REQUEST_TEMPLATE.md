@@ -18,14 +18,17 @@ Fixes #NN
 
 ## How it was verified
 
-<!-- Be specific and honest. Good: "53 tests pass locally; live-FDC suite passes
-     against the real API with USDA_API_KEY set"; "drove planner -> list ->
-     where-to-buy end-to-end with a real recipe and confirmed X".
+<!-- Be specific and honest. Good: "35 mocked tests pass locally; live-FDC tier
+     passes against the real API with USDA_API_KEY set"; "drove planner -> list
+     -> where-to-buy end-to-end with a real recipe and confirmed X"; "diffed old
+     vs new match groups across 19 product names, 0 mismatches".
      Bad: "should work", "tested locally".
+     Counts go stale - say what you ran, not a number copied from here.
      If something is NOT verified, say what and why. -->
 
 - [ ] `ruff check .` passes
-- [ ] `pytest` passes
+- [ ] `pytest -k "not Live"` passes (the required, deterministic suite)
+- [ ] Live-FDC tier checked if the change touches USDA/ingredient matching (non-blocking in CI by design, so it's on you)
 - [ ] New behavior has a test / fixed behavior has a regression test that fails on the old code
 - [ ] Independent second-opinion review addressed
 - [ ] README updated if user-visible behavior, setup, or config changed

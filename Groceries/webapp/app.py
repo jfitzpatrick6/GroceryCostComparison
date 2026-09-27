@@ -989,7 +989,13 @@ def _meal_param():
 @app.route("/planner")
 def planner():
     week_param = request.args.get("week")
-    if week_param:
+    # The two branches call different functions with different argument shapes
+    # (parse a supplied week vs. derive this week's start), and the if/else
+    # reads more clearly than the equivalent three-line ternary. Length isn't
+    # the argument - the ternary would be 113 chars at this indent, under the
+    # 120 limit - so this is a readability call, suppressed at the one site
+    # rather than by ignoring SIM108 repo-wide.
+    if week_param:  # noqa: SIM108
         week_start = datetime.date.fromisoformat(week_param)
     else:
         week_start = week_start_for(datetime.date.today())

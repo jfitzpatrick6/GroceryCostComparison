@@ -53,9 +53,15 @@ master ────────────────────────�
 
 - Branch from `master`, one issue per branch.
 - Name it `<type>/<issue>-<short-slug>`:
-  `fix/58-usda-qualified-ingredient-names`, `feat/61-price-freshness-banner`,
-  `chore/repo-standards-and-ci`.
+  `fix/58-usda-qualified-ingredient-names`, `feat/62-price-freshness-banner`,
+  `chore/77-repo-standards-and-ci`.
   `type` is `fix` | `feat` | `chore` | `docs` | `refactor`.
+  The issue number is part of the name, not decoration — it's what lets anyone
+  map a branch back to the tracker months later. (The PR that introduced this
+  rule had to file its own issue retroactively during review, because its branch
+  was named `chore/repo-standards-and-ci` with no number. Renaming a branch
+  after its PR is open is more disruptive than filing the issue, so the branch
+  kept its name — recorded here rather than left as a silent counterexample.)
 - Keep branches short-lived. A branch that lives for weeks will conflict with
   everything; if the work is that big, the issue was too big — split it.
 - Rebase onto `master` rather than merging `master` in, so history stays linear.
@@ -84,7 +90,7 @@ repo's history genuinely useful — a `git log` read tells you *why*, not just
    priced '$2.19-2.69' is obviously $/lb, not a total package price").
 2. **The change.** What you did and, where it matters, what you deliberately
    did *not* do and why.
-3. **`Verified:`** — how you know it works. Be honest. "53 tests pass locally;
+3. **`Verified:`** — how you know it works. Be honest. "41 tests pass locally;
    live-FDC suite passes against the real API" is useful. "Should work" is not.
    If you could not verify something, say so explicitly.
 
@@ -122,7 +128,9 @@ Merge with **squash** so one issue = one commit on `master`.
 Work is done when *all* of these hold:
 
 - [ ] `ruff check .` passes
-- [ ] `pytest` passes (and the live-FDC suite ran, if `USDA_API_KEY` is set)
+- [ ] `pytest -k "not Live"` passes — the required, deterministic suite
+- [ ] The live-FDC tier ran if the change touches USDA/ingredient matching. CI
+      runs it **non-blocking by design** (see §7), so gating on it is on you.
 - [ ] CI is green on the PR
 - [ ] New behavior has a test. Fixed behavior has a *regression* test that
       fails on the old code — otherwise nothing stops it regressing.
@@ -188,8 +196,18 @@ utility module for a one-time operation.
   runs, and a live suite behind `@unittest.skipUnless(os.getenv("API_KEY"), …)`.
   Mocks are the regression net; the live suite is the truth. If the live tier is
   skipping in your environment, that's a coverage gap, not a convenience.
-- Tests must not require a database or network to pass. If you need one, mock it
-  or mark it explicitly.
+- **Only the mocked tier may gate CI.** The live tier asserts exact values a
+  third party returns today — `1 tsp black pepper = 2.3g`, `1 cup butter = 227g`
+  — so an FDC re-rank, a data revision, or a 429 would redden `master` with no
+  code change and nothing anyone could do about it. That's the kind of flake
+  that trains people to ignore CI. So `.github/workflows/ci.yml` splits them:
+  `pytest -k "not Live"` is required, `pytest -k "Live"` runs with
+  `continue-on-error: true` and reports. Run the live tier locally before
+  merging anything that touches matching, and treat a failure there as real
+  even though CI won't.
+- The required tier must not need a database or network to pass. If a test needs
+  one, it belongs in the live tier or the logic should be extracted into a pure
+  function.
 - **`app.py` is the coverage gap.** `matching.py` and the USDA logic are well
   tested; the 1,800 lines of routes, planner math, pantry depletion, and
   package-fit costing are not. New work in `app.py` should add tests — the pure
@@ -204,11 +222,12 @@ utility module for a one-time operation.
 **The current state is known-bad and is being fixed — do not make it worse.**
 
 Today, schema is created by ad-hoc `CREATE TABLE IF NOT EXISTS` and
-`ALTER TABLE` calls scattered across ten `ensure_*_table()` functions and 46
-call sites, executed on nearly every request. One of them
-(`inject_profile_switcher`) is a Flask `@app.context_processor`, so *every page
-render* runs DDL and a `COMMIT`. DDL takes `ACCESS EXCLUSIVE` locks, and one
-path drops and re-adds a constraint on `meal_plan_slots` implicitly.
+`ALTER TABLE` calls scattered across nine `ensure_*_table()` functions and
+roughly 37 call sites (counts as of #77 — grep `ensure_` to recheck rather than
+trusting a number in a document). They execute on nearly every request. One of
+them (`inject_profile_switcher`) is a Flask `@app.context_processor`, so *every
+page render* runs DDL and a `COMMIT`. DDL takes `ACCESS EXCLUSIVE` locks, and
+one path drops and re-adds a constraint on `meal_plan_slots` implicitly.
 
 Rules while that stands:
 
@@ -265,13 +284,24 @@ to it. Read those reasons before adding to the list. The short version:
   `matching.py`'s `r"\bconfectioners['’]?\s+sugar\b"` — real store listings use
   the curly apostrophe, so "fixing" it would silently break matching.
   **Never autofix these.**
-- `SIM105/108/117` are ignored for specific, documented readability reasons.
+- `SIM105` and `SIM117` are ignored repo-wide because both name *recurring*
+  patterns (documented at each entry in `pyproject.toml`). `SIM108` is **not**
+  ignored — it fires at exactly one site, which carries a targeted
+  `# noqa: SIM108` with its reason beside it. That's the rule: blanket ignore
+  for a pattern, targeted noqa for a single line.
 - `ruff format` is intentionally not enforced (see the CI workflow).
 
-**One gap to know about:** ruff inherits pycodestyle's E501 exemption for lines
-whose overage is a single unsplittable token, so a long URL passes regardless of
-length. `BJs.py` currently has a **1,129-character line** that E501 will never
-flag. Don't assume "lint is green" means "no absurd lines."
+**One gap to know about.** E501 has three documented exemptions (`ruff rule
+E501`), and one of them bites here: **a line that *ends with* a URL is exempt,
+as long as the URL starts before the line-length threshold.** `BJs.py` has a
+**1,129-character line** that is one long request URL, and E501 will not flag
+it — at any `line-length`.
+
+The exemption is narrower than it sounds, which is why it's worth stating
+precisely: the same line *is* flagged if anything follows the URL (appending
+`  # note` pushes it over), and a long non-URL string assignment is flagged
+normally. So the rule isn't "long URLs are allowed", it's "a line whose tail is
+a URL gets a pass." Don't assume "lint is green" means "no absurd lines."
 
 ---
 

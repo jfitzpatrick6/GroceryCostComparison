@@ -18,13 +18,18 @@ correctness and not losing the family's recipes are not.
 1. **GitHub is the source of truth.** Every unit of work has an issue; no issue,
    no PR. Work lands on `master` only through a PR with CI green.
 2. **Never commit to `master` directly.** Branch: `<type>/<issue>-<slug>`.
-3. **`ruff check .` and `pytest` pass before you call anything done.** Config is
-   in `pyproject.toml`; CI is `.github/workflows/ci.yml`.
+3. **`ruff check .` and `pytest -k "not Live"` pass before you call anything
+   done.** Config is in `pyproject.toml`; CI is `.github/workflows/ci.yml`. The
+   live-FDC tier (`-k "Live"`) is **non-blocking in CI by design** — it asserts
+   values a third-party API returns today, so a failure there must not redden
+   `master` — but run it locally and treat a failure as real if you touched
+   USDA/ingredient matching.
 4. **Never weaken a test to make it pass.** If the test is wrong, fix it and
    explain why in the commit body.
 5. **Never autofix `RUF001/002/003`.** The curly apostrophe in `matching.py`'s
-   `confectioners['’]?s sugar` is load-bearing — real store listings use
-   typographic quotes. "Fixing" it silently breaks cross-store matching.
+   `r"\bconfectioners['’]?\s+sugar\b"` is load-bearing — real store listings use
+   typographic quotes, and ruff's proposed fix swaps in a **grave accent**.
+   "Fixing" it silently breaks cross-store matching.
 6. **No secrets in source, ever.** Config comes from `.env` (gitignored). Store
    IDs are location-identifying — never paste them into an issue, PR, or log.
 7. **Never add a new `ensure_*_table()` call site** and never write a destructive
@@ -68,14 +73,19 @@ unaliased because its FDC entry lacks cup data. Follow this in new code.
   (no wheel; source build needs `pg_config`). For local test runs install
   `psycopg2-binary` unpinned in a `.venv` — the container pin is unaffected.
 - Tests need only the **webapp** requirements (flask, psycopg2-binary, requests)
-  plus pytest. They never touch a database or the network. Do not install the
-  scraper's heavy deps (pandas, playwright) just to lint or test.
+  plus pytest, and never touch a **database**. They *can* touch the network: the
+  live-FDC tier in `test_usda_matching.py` runs whenever `USDA_API_KEY` is
+  resolvable, and that file loads the repo-root `.env` itself, so a plain
+  `pytest` on a machine with `.env` present makes real API calls. Do not install
+  the scraper's heavy deps (pandas, playwright) just to lint or test.
 - `USDA_API_KEY` lives in `.env`. `test_usda_matching.py` loads it from there
   itself so the live-FDC tier runs locally; in CI it comes from a repo secret and
   skips cleanly when absent.
-- Ruff inherits pycodestyle's E501 exemption for a single unsplittable token, so
-  `BJs.py`'s **1,129-character URL line will never be flagged**. "Lint is green"
-  does not mean "no absurd lines."
+- E501 exempts **a line that ends with a URL** (provided the URL starts before
+  the limit), so `BJs.py`'s **1,129-character request-URL line will never be
+  flagged** — at any `line-length`. The exemption is narrower than it sounds:
+  append anything after the URL and it *is* flagged. "Lint is green" does not
+  mean "no absurd lines." See CONTRIBUTING §10.
 
 ## Known state (verify before relying on this)
 

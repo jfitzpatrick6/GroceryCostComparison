@@ -67,22 +67,39 @@ jobs:
 
       # The webapp's own pins. psycopg2-binary is imported by app.py at module
       # load, so it has to be installed for the tests to import it - but no
-      # database is ever contacted.
+      # database is ever contacted by any test.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r Groceries/webapp/requirements.txt
           pip install "pytest>=8"
 
-      - name: Run tests
+      # Split into two steps on purpose.
+      #
+      # The mocked/local suite is the gate: deterministic, no network, and a
+      # failure always means our code is wrong.
+      #
+      # The live-FDC tier is NOT a gate, and that is deliberate. It asserts
+      # exact gram values the real USDA API returns today (1 tsp black pepper =
+      # 2.3g, 1 cup butter = 227g, ...). Those are third-party data: an FDC
+      # re-rank, a revision, or a 429 would redden master with no code change
+      # and no action anyone could take. That is precisely the flake that
+      # trains people to ignore CI. So it runs, it reports, and it cannot block
+      # - the value is in seeing the result, not in gating on it.
+      #
+      # `-k` selects on the unittest class names (LiveUsdaApiTests vs
+      # MockedUsdaMatchingTests); there are no pytest markers to use.
+      - name: Run tests (mocked suite - required)
+        run: pytest -v -k "not Live"
+
+      - name: Run live-FDC tests (reported, non-blocking)
+        # `secrets` context, not `env` - a step's own `env:` block isn't visible
+        # to its own `if:`, so testing env.USDA_API_KEY here would always be ''.
+        if: ${{ secrets.USDA_API_KEY != '' }}
+        continue-on-error: true
         env:
-          # Present only if the repo secret is configured. Without it the
-          # live-FDC suite in test_usda_matching.py skips itself (via
-          # @skipUnless) and the mocked suite still runs - so CI stays green
-          # either way, but a configured secret buys real-API verification of
-          # the ingredient-matching behavior that mocks can't stand in for.
           USDA_API_KEY: ${{ secrets.USDA_API_KEY }}
-        run: pytest -v
+        run: pytest -v -k "Live"
 
       - name: Report whether live FDC tests ran
         if: always()
@@ -90,5 +107,7 @@ jobs:
           USDA_API_KEY: ${{ secrets.USDA_API_KEY }}
         run: |
           if [ -z "$USDA_API_KEY" ]; then
-            echo "::warning::USDA_API_KEY secret not set - LiveUsdaApiTests skipped. Mocked coverage still ran, but real-API ingredient matching was not verified."
+            echo "::warning::USDA_API_KEY secret not set - the live-FDC tier did not run. The mocked suite passed, but real-API ingredient matching (#54, #58) was not verified here. Run it locally with the key in .env, or add the repo secret."
+          else
+            echo "::notice::USDA_API_KEY present - live-FDC tier ran. It is non-blocking by design (see the comment above); check its step output for real-API regressions."
           fi
