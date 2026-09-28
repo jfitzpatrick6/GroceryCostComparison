@@ -50,6 +50,74 @@ def price_data_available(cur):
     return cur.fetchone()["table_exists"]
 
 
+# Past this many days since a store's last scrape the banner stops being a quiet
+# note and becomes a visible warning. A week matches how grocery pricing actually
+# works: stores set sale prices on a weekly cycle, so a comparison built on data
+# older than the last cycle can confidently name a "cheapest store" that is
+# simply last week's cheapest store. 7 is a judgment call, not a measured
+# constant - it is short enough that a dead scheduler surfaces within a week and
+# long enough that a skipped night doesn't shout.
+PRICE_STALE_AFTER_DAYS = 7
+
+
+def price_freshness_from_catalog(catalog):
+    """How old the price data behind a comparison is, per store (#62).
+
+    Takes the catalog matching.load_catalog() already fetched rather than running
+    its own query. The view holds one row per (product, store) - the most recent -
+    so the per-store max of its datetime column is exactly that store's last
+    scrape time, and it is already in memory. Computing this separately would
+    mean a `GROUP BY store` aggregate over the whole history table on every page
+    load, to derive a number the page has already paid to fetch.
+
+    Returns None when the catalog is empty, so a caller can tell "no price data"
+    from "price data, but old" - those need different messages, and the former is
+    already gated by price_data_available().
+
+    Per store rather than one global timestamp because collector.py scrapes each
+    store independently and one can fail while the others succeed (#24). A single
+    "prices as of today" would then hide that one chain's numbers are six weeks
+    old, which is worse than saying nothing at all: it lends the stale store the
+    credibility of the fresh ones.
+    """
+    latest = {}
+    for row in catalog:
+        when = row.get("datetime")
+        if when is None:
+            continue
+        store = row.get("store")
+        if store is None:
+            continue
+        if store not in latest or when > latest[store]:
+            latest[store] = when
+    if not latest:
+        return None
+
+    # A datetime from Postgres; compare on the date part so "scraped 3 hours ago"
+    # is 0 days old rather than rounding up to 1.
+    today = datetime.date.today()
+    stores = []
+    for store in sorted(latest):
+        when = latest[store]
+        last_day = when.date() if hasattr(when, "date") else when
+        age = (today - last_day).days
+        stores.append({
+            "store": store,
+            "last_scrape": last_day,
+            "age_days": age,
+            "stale": age > PRICE_STALE_AFTER_DAYS,
+        })
+    return {
+        "stores": stores,
+        # The oldest store is what the warning should be about: a comparison is
+        # only as current as its least current input.
+        "oldest_age_days": max(s["age_days"] for s in stores),
+        "newest_age_days": min(s["age_days"] for s in stores),
+        "any_stale": any(s["stale"] for s in stores),
+        "stale_after_days": PRICE_STALE_AFTER_DAYS,
+    }
+
+
 @app.route("/healthz")
 def healthz():
     """Liveness/readiness probe (#61). Returns JSON, 200 when the database
@@ -615,9 +683,15 @@ def where_to_buy():
             per_item = []
             unmatched = []
             all_stores = set()
+            # None means "no price data at all", which the template renders
+            # differently from "price data, but old" (#62). Set inside the
+            # guard below because there is no catalog to derive it from
+            # otherwise.
+            freshness = None
 
             if price_data_available(cur):
                 catalog = matching.load_catalog(cur)
+                freshness = price_freshness_from_catalog(catalog)
                 for item in items:
                     # One product per store (the best identity match, not
                     # just "cheapest thing that loosely matched") - see
@@ -660,7 +734,7 @@ def where_to_buy():
 
     return render_template(
         "where_to_buy.html", per_item=per_item, unmatched=unmatched,
-        split_total=split_total, store_totals=store_totals,
+        split_total=split_total, store_totals=store_totals, freshness=freshness,
     )
 
 

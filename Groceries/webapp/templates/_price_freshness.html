@@ -1,0 +1,43 @@
+{#
+  Price-age banner for pages whose answer is derived from scraped prices (#62).
+
+  Include with a `freshness` value from app.price_freshness_from_catalog(). It is
+  None when there is no price data at all, which is a different message from
+  "data, but old" - and both matter, because the failure this exists to prevent
+  is a confident answer built on stale numbers looking identical to a fresh one.
+
+  Per store rather than one global date: collector.py scrapes each store
+  independently and one can fail while the others succeed (#24), so a single
+  "as of today" would hide that one chain's prices are six weeks old and lend it
+  the credibility of the fresh ones.
+#}
+{% if freshness is none %}
+<p style="margin-top:1rem;padding:0.7rem 0.9rem;border-left:4px solid #999;background:#f4f4f4;color:#444">
+  <strong>No price data yet.</strong>
+  Nothing has been scraped, so there is nothing to compare against. Run a scrape
+  (<code>docker compose run --rm grocery_scraper</code>) and reload.
+</p>
+{% else %}
+<p style="margin-top:1rem;padding:0.7rem 0.9rem;border-left:4px solid {{ '#c0392b' if freshness.any_stale else '#ccc' }};background:{{ '#fdf2f0' if freshness.any_stale else '#fafafa' }};color:#333">
+  {% if freshness.any_stale %}
+    <strong>These prices are out of date.</strong>
+    The oldest store here was scraped
+    {{ freshness.oldest_age_days }} day{{ '' if freshness.oldest_age_days == 1 else 's' }} ago
+    (more than {{ freshness.stale_after_days }}), so a store that looks cheapest may
+    simply be last week's cheapest - sales change on a weekly cycle.
+    Check that <code>scraper_scheduler</code> is running:
+    <code>docker compose logs --tail 20 scraper_scheduler</code>.
+  {% else %}
+    Prices are current.
+  {% endif %}
+  <span style="display:block;margin-top:0.45rem;font-size:0.9rem;color:#666">
+    Last scrape per store:
+    {% for s in freshness.stores %}
+      <span style="{% if s.stale %}color:#c0392b;font-weight:600{% endif %}">
+        {{ s.store }} &mdash; {{ s.last_scrape.strftime('%a %d %b') }}
+        ({{ s.age_days }}d)
+      </span>{% if not loop.last %} &middot; {% endif %}
+    {% endfor %}
+  </span>
+</p>
+{% endif %}

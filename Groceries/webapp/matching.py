@@ -322,8 +322,17 @@ def load_catalog(cur):
     per request and reused across every list item, rather than one query
     per item (the previous per-item ILIKE queries in app.py did N separate
     round trips; this does one). 23k rows is small enough to hold in memory
-    and normalize in Python for a self-hosted, single-request workload."""
-    cur.execute("SELECT product, store, price, size, unit_price, unit FROM grocery_prices_latest")
+    and normalize in Python for a self-hosted, single-request workload.
+
+    `datetime` is selected even though matching never reads it. The view holds
+    exactly one row per (product, store) - the most recent - so the per-store max
+    of this column *is* that store's last scrape time. Carrying it lets app.py say
+    how old the prices behind a comparison are (#62) with no extra query, instead
+    of a `GROUP BY store` aggregate that would scan the whole history table a
+    second time on every page load; one extra date per row is far cheaper than
+    that. It does not affect matching, so tests that build catalog fixtures by
+    hand are unaffected by not including it."""
+    cur.execute("SELECT product, store, price, size, unit_price, unit, datetime FROM grocery_prices_latest")
     rows = cur.fetchall()
     catalog = []
     for row in rows:
