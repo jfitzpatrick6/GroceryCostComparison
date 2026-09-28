@@ -50,6 +50,104 @@ def price_data_available(cur):
     return cur.fetchone()["table_exists"]
 
 
+# Past this many days since a store's last scrape the banner stops being a quiet
+# note and becomes a visible warning. A week matches how grocery pricing actually
+# works: stores set sale prices on a weekly cycle, so a comparison built on data
+# older than the last cycle can confidently name a "cheapest store" that is
+# simply last week's cheapest store. 7 is a judgment call, not a measured
+# constant - it is short enough that a dead scheduler surfaces within a week and
+# long enough that a skipped night doesn't shout.
+PRICE_STALE_AFTER_DAYS = 7
+
+# Stores the scraper attempts, mirrored from collector.py's list of
+# (name, scrape_fn, store_id) tuples.
+#
+# Duplicated rather than imported, and that is a real cost worth stating: the two
+# lists can drift. Importing collector.py is not an option because it imports
+# pandas and playwright at module load and neither is installed in the webapp
+# image, so `import collector` would take the whole app down at startup. Reading
+# the names out of the database cannot work either, because a store that produced
+# zero rows leaves no trace there - which is precisely the case this list exists
+# to surface.
+#
+# The drift fails safe rather than loud: add a store to the scraper and forget it
+# here, and the only symptom is that the banner stops flagging that store as
+# missing. It cannot invent a store that isn't there. Worth a test pinning the
+# list so the duplication is at least visible when it changes.
+EXPECTED_STORES = ("Aldis", "BJs", "Tops", "Walmart")
+
+
+def price_freshness_from_catalog(catalog):
+    """How old the price data behind a comparison is, per store (#62).
+
+    Takes the catalog matching.load_catalog() already fetched rather than running
+    its own query. The view holds one row per (product, store) - the most recent -
+    so the per-store max of its datetime column is exactly that store's last
+    scrape time, and it is already in memory. Computing this separately would
+    mean a `GROUP BY store` aggregate over the whole history table on every page
+    load, to derive a number the page has already paid to fetch.
+
+    Returns None when the catalog is empty, so a caller can tell "no price data"
+    from "price data, but old" - those need different messages, and the former is
+    already gated by price_data_available().
+
+    Per store rather than one global timestamp because collector.py scrapes each
+    store independently and one can fail while the others succeed (#24). A single
+    "prices as of today" would then hide that one chain's numbers are six weeks
+    old, which is worse than saying nothing at all: it lends the stale store the
+    credibility of the fresh ones.
+    """
+    latest = {}
+    for row in catalog:
+        when = row.get("datetime")
+        if when is None:
+            continue
+        store = row.get("store")
+        if store is None:
+            continue
+        # Normalize to a date before comparing, not after. Comparing raw values
+        # would raise TypeError if one row carried a datetime and another a bare
+        # date for the same store - unreachable from Postgres today, where the
+        # column is TIMESTAMP and psycopg2 returns datetime uniformly, but this
+        # function's docstring and its tests both advertise date tolerance, so it
+        # has to actually tolerate them rather than only claiming to.
+        day = when.date() if hasattr(when, "date") else when
+        if store not in latest or day > latest[store]:
+            latest[store] = day
+    if not latest:
+        return None
+
+    today = datetime.date.today()
+    stores = []
+    for store in sorted(latest):
+        last_day = latest[store]
+        age = (today - last_day).days
+        stores.append({
+            "store": store,
+            "last_scrape": last_day,
+            "age_days": age,
+            "stale": age > PRICE_STALE_AFTER_DAYS,
+        })
+    return {
+        "stores": stores,
+        # The oldest store is what the warning should be about: a comparison is
+        # only as current as its least current input.
+        "oldest_age_days": max(s["age_days"] for s in stores),
+        "newest_age_days": min(s["age_days"] for s in stores),
+        "any_stale": any(s["stale"] for s in stores),
+        "stale_after_days": PRICE_STALE_AFTER_DAYS,
+        # Stores the scraper tries but that produced no rows at all. This is the
+        # part of #62 that a per-store age list cannot express: a store with no
+        # data has no age to show, so it simply vanishes from the banner, and the
+        # page then presents a "cheapest store" answer that silently excludes a
+        # chain the household shops at. Walmart is not hypothetical - it has been
+        # returning zero items since #12 (bot-verification wall, deliberately not
+        # circumvented), so every comparison this app has ever rendered excluded
+        # it without saying so.
+        "missing_stores": [s for s in EXPECTED_STORES if s not in latest],
+    }
+
+
 @app.route("/healthz")
 def healthz():
     """Liveness/readiness probe (#61). Returns JSON, 200 when the database
@@ -615,9 +713,15 @@ def where_to_buy():
             per_item = []
             unmatched = []
             all_stores = set()
+            # None means "no price data at all", which the template renders
+            # differently from "price data, but old" (#62). Set inside the
+            # guard below because there is no catalog to derive it from
+            # otherwise.
+            freshness = None
 
             if price_data_available(cur):
                 catalog = matching.load_catalog(cur)
+                freshness = price_freshness_from_catalog(catalog)
                 for item in items:
                     # One product per store (the best identity match, not
                     # just "cheapest thing that loosely matched") - see
@@ -660,7 +764,7 @@ def where_to_buy():
 
     return render_template(
         "where_to_buy.html", per_item=per_item, unmatched=unmatched,
-        split_total=split_total, store_totals=store_totals,
+        split_total=split_total, store_totals=store_totals, freshness=freshness,
     )
 
 

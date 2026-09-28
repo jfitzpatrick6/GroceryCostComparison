@@ -4,6 +4,12 @@
 <h1>Where to Buy</h1>
 <p><a href="/list">&laquo; Back to list</a></p>
 
+{# This page is the one that tells the household where to spend money, so it is
+   the one place where the age of the data is not optional context (#62). It was
+   also the only price-derived page that showed no date at all - /prices and
+   /staples both had a datetime column while this one did not. #}
+{% include "_price_freshness.html" %}
+
 <h2>Cheapest store per item</h2>
 <p style="color:#666">"Cost to cover" accounts for needing to buy whole packages when your list has a quantity (e.g. needing 2 lb from 1.5 lb packages means buying 2 of them) - it's not just the cheapest price tag when that happens.</p>
 <table>
