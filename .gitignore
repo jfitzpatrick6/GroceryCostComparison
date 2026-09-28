@@ -18,6 +18,11 @@ walmart_search.json
 # them out of git as well. Store ids are location-identifying and API keys must
 # be rotatable without a code change - see CONTRIBUTING.md §9.
 .env.*
+# ...except committed templates. Without this negation the `.env.*` pattern above
+# would silently swallow Groceries/.env.example, which documents the compose
+# interpolation variables (#90) and is meant to be tracked. Verify with
+# `git check-ignore -v Groceries/.env.example` - it should print nothing.
+!.env.example
 
 # Tooling caches
 .pytest_cache/

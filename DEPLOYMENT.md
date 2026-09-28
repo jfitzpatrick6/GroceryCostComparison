@@ -55,6 +55,32 @@ chmod 600 .env
 anything else, because a committed `.env` puts store IDs in the repo history
 permanently.
 
+### A second, different `.env` — and the two are not interchangeable
+
+Docker compose reads **two** `.env` files for **two different purposes**:
+
+| File | Purpose | What goes in it |
+|---|---|---|
+| repo-root `.env` | passed into containers via `env_file: ../.env` | store ids, `USDA_API_KEY`, `SECRET_KEY` |
+| `Groceries/.env` | compose **variable interpolation** in `docker-compose.yml` | `WEBAPP_PORT` |
+
+`Groceries/.env` is the *project directory* env file, which is what `${WEBAPP_PORT:-5000}` reads. Putting `WEBAPP_PORT` in the root `.env` does nothing; putting a store id in `Groceries/.env` does nothing either. **Neither produces an error** — the value just silently never arrives, which is the worst way for this to fail.
+
+Copy the template and edit:
+
+```
+cp Groceries/.env.example Groceries/.env
+$EDITOR Groceries/.env          # set WEBAPP_PORT to something free — see step 4
+```
+
+Both files are gitignored. `Groceries/.env.example` is the tracked template that
+documents the variables; `.gitignore` has an explicit `!.env.example` negation so
+the `.env.*` pattern doesn't swallow it.
+
+This file is **optional** — every variable has a default in `docker-compose.yml`,
+so a host where port 5000 is free needs no `Groceries/.env` at all. On gigabyte it
+is required, because 5000 is Frigate.
+
 ## 2. First start
 
 ```
@@ -112,12 +138,22 @@ You want to see, in order:
 You do **not** want to see `WARNING: This is a development server`. If you do,
 the image is stale — rebuild.
 
-Then check the database really is empty-but-correct, and that the app answers:
+Then check the database really is empty-but-correct, and that the app answers.
+Set `PORT` to whatever you published (step 4) — it is **5000 only if you left the
+default**, and on gigabyte it will not be, because 5000 is Frigate:
 
 ```
+PORT="${WEBAPP_PORT:-5000}"    # or just hardcode the number you chose, e.g. 5050
 docker compose exec db psql -U user -d grocery_db -tAc \
   "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"   # -> 10
-curl -s http://127.0.0.1:5000/healthz                                            # -> {"database":"reachable","status":"ok"}
+curl -s "http://127.0.0.1:$PORT/healthz"                                         # -> {"database":"reachable","status":"ok"}
+```
+
+Read the port back from the running container rather than trusting the variable,
+if there is any doubt — this is the mapping actually in force:
+
+```
+docker compose ps --format '{{.Name}}\t{{.Ports}}' | grep webapp
 ```
 
 `/healthz` returning `503 {"status":"unhealthy"}` means the app is up and the
@@ -129,9 +165,10 @@ This was verified during development and is worth repeating on the real host,
 because a first deploy is exactly when schema-ordering bugs show up (#80, #82):
 
 ```
+PORT="${WEBAPP_PORT:-5000}"    # the port you published, not necessarily 5000
 for p in / /healthz /prices /staples /list /pantry /recipes /recipes/new \
          /planner /planner/ingredients /history /profiles /list/where-to-buy; do
-  printf '%s  %s\n' "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000$p)" "$p"
+  printf '%s  %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT$p")" "$p"
 done
 ```
 
@@ -145,12 +182,37 @@ which is correct — a `500` there means the schema wasn't created.
 
 ## 4. Reach it from the family's devices
 
-The container publishes `5000:5000` on **all** of gigabyte's interfaces. From a
-tailnet device:
+The container publishes on **all** of gigabyte's interfaces. From a tailnet
+device, using whatever host port you configured:
 
 ```
-http://gigabyte.taild1e879.ts.net:5000
+http://gigabyte.taild1e879.ts.net:5000        # default
+http://gigabyte.taild1e879.ts.net:5050        # if WEBAPP_PORT=5050 in Groceries/.env
 ```
+
+Confirm the mapping actually in force rather than trusting memory — this is the
+one thing worth checking on a host that runs a dozen other services:
+
+```
+docker compose ps --format '{{.Name}}\t{{.Ports}}' | grep webapp
+```
+
+### Choosing the host port — do this before step 2
+
+**Port 5000 is already taken on gigabyte** by Frigate, the family's camera NVR,
+and 5001 by `sleep-tracker-web`. Both were confirmed by surveying the host. On a
+shared always-on box that is the normal condition, not an accident, so check
+rather than assume:
+
+```
+ss -tln | grep -E ':5000\b'
+docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '5000|5001'
+```
+
+If it's taken, set a free one in `Groceries/.env` (see step 1) — **do not edit
+`docker-compose.yml`**, because that is a tracked file and every `git pull` would
+then risk a conflict. Ports verified free on gigabyte as of 2026-09-27 include
+5050, 5055, 8090, 8888 and 9000; re-check before relying on that list.
 
 There is **no authentication** — that is a deliberate, documented tradeoff
 (issue #35: the tailnet is the access control). Two consequences to be aware of:
