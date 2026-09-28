@@ -229,6 +229,27 @@ There is **no authentication** — that is a deliberate, documented tradeoff
 scrape). Dumps go to `backups/` at the repo root — a host bind mount, outside the
 `db_data` volume, so they survive `docker compose down -v`.
 
+**`Up` is not evidence of a working backup.** The script loops and retries
+forever, so a container that cannot write looks exactly like one that can. Read
+the log and the directory:
+
+```
+docker compose logs --tail 5 db_backup    # want: "OK /backups/grocery_db-…sql.gz <size>"
+ls -la backups/                           # want: a .sql.gz owned by YOUR user, not root
+```
+
+If you see `Permission denied` on a `.tmp` file, the bind mount is root-owned.
+That happens when `backups/` did not exist before `up`, because **Docker creates a
+missing bind-mount source as `root:root` 755** while the container runs as
+`BACKUP_UID` (#92). A fresh clone avoids this via the tracked `backups/.gitkeep`;
+to repair an already-broken directory without sudo, chown it from a throwaway root
+container:
+
+```
+docker run --rm -v "$PWD/backups:/backups" alpine chown -R "$(id -u):$(id -g)" /backups
+docker compose restart db_backup
+```
+
 ```
 docker compose logs --tail 5 db_backup     # want: "OK /backups/grocery_db-...sql.gz <size> prices_data=false"
 ls -la ../backups/

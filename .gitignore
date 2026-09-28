@@ -31,4 +31,11 @@ walmart_search.json
 # Nightly pg_dump output from the db_backup service (#60). Bind-mounted from the
 # host so backups survive `docker compose down -v`, and deliberately outside the
 # db_data volume. Compressed dumps of household data - never committed.
-backups/
+#
+# `backups/*` with a negation, not `backups/`. Git cannot re-include a file whose
+# *parent directory* is excluded, so ignoring the directory outright would make
+# `!backups/.gitkeep` silently do nothing - and .gitkeep is what stops Docker
+# inventing the mount point as root:root (#92). Same negation trap as
+# .env.example in #90.
+backups/*
+!backups/.gitkeep

@@ -1,0 +1,8 @@
+# Keeps this directory in the checkout so the db_backup bind mount has a source
+# that already exists and is owned by whoever cloned the repo (#92).
+#
+# Without it, Docker auto-creates a missing bind-mount source as root:root 755,
+# and the container runs as ${BACKUP_UID:-1000} - so it cannot write, and every
+# backup fails with 'Permission denied' while the container still looks Up.
+#
+# The dumps themselves are gitignored; only this file is tracked.

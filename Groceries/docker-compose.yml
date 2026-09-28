@@ -124,7 +124,12 @@ services:
     # lands on the host as root:root - readable by the household user but not
     # deletable without sudo. Matching the host uid keeps the backups directory
     # manageable and is consistent with the webapp's uid 10001 (#71).
-    user: "1000:1000"
+    #
+    # Interpolated rather than hardcoded, because 1000 is only the conventional
+    # first user on Debian/Ubuntu/Fedora - it is not universal, and a host whose
+    # primary user is 1001 or 501 would silently get dumps it cannot manage (#92).
+    # Set BACKUP_UID/BACKUP_GID in Groceries/.env to match `id -u` / `id -g`.
+    user: "${BACKUP_UID:-1000}:${BACKUP_GID:-1000}"
     entrypoint: ["/bin/bash", "/backup.sh"]
     restart: unless-stopped
 
