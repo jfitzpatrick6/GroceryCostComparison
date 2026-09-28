@@ -338,6 +338,13 @@ def load_catalog(cur):
     for row in rows:
         tokens = normalize_tokens(row["product"])
         if not tokens:
+            # Rows dropped here never reach the catalog, so a caller deriving
+            # anything from the catalog sees a subset. For matching that is the
+            # point - a product with no tokens cannot match. For #62's freshness
+            # banner, which takes a per-store max over this same list, it can only
+            # *under*-state how recent a store's data is, i.e. warn when it needn't.
+            # That is the safe direction: a false "out of date" is an annoyance, a
+            # false "current" is the thing this app must not say.
             continue
         entry = dict(row)
         entry["_tokens"] = tokens

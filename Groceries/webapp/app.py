@@ -59,6 +59,23 @@ def price_data_available(cur):
 # long enough that a skipped night doesn't shout.
 PRICE_STALE_AFTER_DAYS = 7
 
+# Stores the scraper attempts, mirrored from collector.py's list of
+# (name, scrape_fn, store_id) tuples.
+#
+# Duplicated rather than imported, and that is a real cost worth stating: the two
+# lists can drift. Importing collector.py is not an option because it imports
+# pandas and playwright at module load and neither is installed in the webapp
+# image, so `import collector` would take the whole app down at startup. Reading
+# the names out of the database cannot work either, because a store that produced
+# zero rows leaves no trace there - which is precisely the case this list exists
+# to surface.
+#
+# The drift fails safe rather than loud: add a store to the scraper and forget it
+# here, and the only symptom is that the banner stops flagging that store as
+# missing. It cannot invent a store that isn't there. Worth a test pinning the
+# list so the duplication is at least visible when it changes.
+EXPECTED_STORES = ("Aldis", "BJs", "Tops", "Walmart")
+
 
 def price_freshness_from_catalog(catalog):
     """How old the price data behind a comparison is, per store (#62).
@@ -88,18 +105,22 @@ def price_freshness_from_catalog(catalog):
         store = row.get("store")
         if store is None:
             continue
-        if store not in latest or when > latest[store]:
-            latest[store] = when
+        # Normalize to a date before comparing, not after. Comparing raw values
+        # would raise TypeError if one row carried a datetime and another a bare
+        # date for the same store - unreachable from Postgres today, where the
+        # column is TIMESTAMP and psycopg2 returns datetime uniformly, but this
+        # function's docstring and its tests both advertise date tolerance, so it
+        # has to actually tolerate them rather than only claiming to.
+        day = when.date() if hasattr(when, "date") else when
+        if store not in latest or day > latest[store]:
+            latest[store] = day
     if not latest:
         return None
 
-    # A datetime from Postgres; compare on the date part so "scraped 3 hours ago"
-    # is 0 days old rather than rounding up to 1.
     today = datetime.date.today()
     stores = []
     for store in sorted(latest):
-        when = latest[store]
-        last_day = when.date() if hasattr(when, "date") else when
+        last_day = latest[store]
         age = (today - last_day).days
         stores.append({
             "store": store,
@@ -115,6 +136,15 @@ def price_freshness_from_catalog(catalog):
         "newest_age_days": min(s["age_days"] for s in stores),
         "any_stale": any(s["stale"] for s in stores),
         "stale_after_days": PRICE_STALE_AFTER_DAYS,
+        # Stores the scraper tries but that produced no rows at all. This is the
+        # part of #62 that a per-store age list cannot express: a store with no
+        # data has no age to show, so it simply vanishes from the banner, and the
+        # page then presents a "cheapest store" answer that silently excludes a
+        # chain the household shops at. Walmart is not hypothetical - it has been
+        # returning zero items since #12 (bot-verification wall, deliberately not
+        # circumvented), so every comparison this app has ever rendered excluded
+        # it without saying so.
+        "missing_stores": [s for s in EXPECTED_STORES if s not in latest],
     }
 
 

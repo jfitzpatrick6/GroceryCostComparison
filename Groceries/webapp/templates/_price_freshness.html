@@ -6,12 +6,18 @@
   "data, but old" - and both matter, because the failure this exists to prevent
   is a confident answer built on stale numbers looking identical to a fresh one.
 
+  `is not defined` alongside `is none` so a page that includes this partial
+  without passing the variable degrades to the no-data message instead of raising
+  UndefinedError. where_to_buy.html always passes it; the next page to include
+  this might not, and a banner whose job is to prevent a misleading answer should
+  not itself be able to 500 the page.
+
   Per store rather than one global date: collector.py scrapes each store
   independently and one can fail while the others succeed (#24), so a single
   "as of today" would hide that one chain's prices are six weeks old and lend it
   the credibility of the fresh ones.
 #}
-{% if freshness is none %}
+{% if freshness is not defined or freshness is none %}
 <p style="margin-top:1rem;padding:0.7rem 0.9rem;border-left:4px solid #999;background:#f4f4f4;color:#444">
   <strong>No price data yet.</strong>
   Nothing has been scraped, so there is nothing to compare against. Run a scrape
@@ -21,10 +27,9 @@
 <p style="margin-top:1rem;padding:0.7rem 0.9rem;border-left:4px solid {{ '#c0392b' if freshness.any_stale else '#ccc' }};background:{{ '#fdf2f0' if freshness.any_stale else '#fafafa' }};color:#333">
   {% if freshness.any_stale %}
     <strong>These prices are out of date.</strong>
-    The oldest store here was scraped
-    {{ freshness.oldest_age_days }} day{{ '' if freshness.oldest_age_days == 1 else 's' }} ago
-    (more than {{ freshness.stale_after_days }}), so a store that looks cheapest may
-    simply be last week's cheapest - sales change on a weekly cycle.
+    The oldest store here was scraped {{ freshness.oldest_age_days }} days ago
+    (more than {{ freshness.stale_after_days }}), so a store that looks cheapest
+    may simply be last week's cheapest - sales change on a weekly cycle.
     Check that <code>scraper_scheduler</code> is running:
     <code>docker compose logs --tail 20 scraper_scheduler</code>.
   {% else %}
@@ -39,5 +44,18 @@
       </span>{% if not loop.last %} &middot; {% endif %}
     {% endfor %}
   </span>
+  {# A store with no rows has no age to show, so it would otherwise vanish from
+     the list above entirely and the page would present a "cheapest store" answer
+     that silently excluded a chain the household shops at. Walmart is not
+     hypothetical - it has returned zero items since #12 (bot-verification wall,
+     deliberately not circumvented), so every comparison this app has rendered so
+     far excluded it without saying so. #}
+  {% if freshness.missing_stores %}
+  <span style="display:block;margin-top:0.45rem;font-size:0.9rem;color:#8a6d3b">
+    <strong>Not covered:</strong> {{ freshness.missing_stores | join(', ') }}
+    returned no prices, so they are excluded from every total and comparison on
+    this page - not merely absent from the list above.
+  </span>
+  {% endif %}
 </p>
 {% endif %}

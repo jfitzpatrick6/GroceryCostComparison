@@ -18,6 +18,9 @@ day old.
 """
 
 import datetime
+import inspect
+import pathlib
+import re
 import unittest
 
 import app
@@ -107,6 +110,51 @@ class PriceFreshnessTests(unittest.TestCase):
             [_row("Tops", datetime.date.today() - datetime.timedelta(days=3))]
         )
         self.assertEqual(result["stores"][0]["age_days"], 3)
+
+    def test_mixing_a_date_and_a_datetime_for_one_store_does_not_raise(self):
+        # Regression for a real TypeError: comparing a datetime against a date
+        # with `>` raises, and an earlier version compared the raw values and only
+        # normalized afterwards. Unreachable from Postgres today (the column is
+        # TIMESTAMP, so psycopg2 returns datetime uniformly), but the docstring
+        # advertises date tolerance, so the tolerance has to actually work.
+        catalog = [
+            _row("Tops", self._dt(5)),
+            _row("Tops", datetime.date.today() - datetime.timedelta(days=2)),
+        ]
+        result = app.price_freshness_from_catalog(catalog)
+        self.assertEqual(result["stores"][0]["age_days"], 2, "should keep the newer of the two")
+
+    def test_a_store_with_no_rows_is_reported_as_missing(self):
+        # The case a per-store age list structurally cannot express: no rows means
+        # no age, so the store vanishes from the banner and the page silently
+        # excludes a chain the household shops at. Walmart has returned zero items
+        # since #12, so this is the live situation rather than a hypothetical.
+        catalog = [_row(s, self._dt(1)) for s in ("Tops", "BJs", "Aldis")]
+        result = app.price_freshness_from_catalog(catalog)
+        self.assertEqual(result["missing_stores"], ["Walmart"])
+
+    def test_no_missing_stores_when_every_expected_store_has_data(self):
+        catalog = [_row(name, self._dt(1)) for name in app.EXPECTED_STORES]
+        self.assertEqual(app.price_freshness_from_catalog(catalog)["missing_stores"], [])
+
+    def test_expected_stores_matches_the_scraper_list(self):
+        # EXPECTED_STORES is duplicated from collector.py rather than imported,
+        # because collector.py imports pandas and playwright at module load and
+        # neither exists in the webapp image. Duplication can drift silently, so
+        # pin it: if the scraper's store list changes, this fails and whoever
+        # changed it is told there is a second copy to update.
+        #
+        # Parses collector.py's source rather than importing it, for the same
+        # reason app.py can't.
+        collector = pathlib.Path(inspect.getfile(app)).parent.parent / "collector.py"
+        scraped = re.findall(r'^\s+\("(\w+)",\s*\w+\.main,', collector.read_text(), re.MULTILINE)
+        self.assertTrue(scraped, "found no scraper entries - the regex has stopped matching")
+        self.assertEqual(
+            sorted(scraped),
+            sorted(app.EXPECTED_STORES),
+            "collector.py's scraper list and app.EXPECTED_STORES have drifted - update "
+            "both, or the freshness banner stops flagging a store that produced no data",
+        )
 
 
 if __name__ == "__main__":
