@@ -149,7 +149,23 @@ services:
         # and a wall of 500s.
         condition: service_healthy
     ports:
-      - "5000:5000"
+      # Host side is configurable, container side is not. The app, /healthz and
+      # the healthcheck all keep referring to 5000 inside the container; only the
+      # published mapping moves (#90).
+      #
+      # This is not hypothetical portability polish. On the deployment host
+      # (gigabyte) 5000 is Frigate - the family's camera NVR - and 5001 is
+      # sleep-tracker. An always-on box hosting a dozen services is the normal
+      # case, not the exception, and a hardcoded host port meant the only way to
+      # deploy was to edit a tracked file, which turns every `git pull` into a
+      # possible conflict.
+      #
+      # ${WEBAPP_PORT:-5000} is interpolated by compose from Groceries/.env (the
+      # *project directory*), NOT from the repo-root .env that `env_file` below
+      # passes into the container. Two different mechanisms, easy to conflate -
+      # see Groceries/.env.example. Defaulting to 5000 keeps existing setups and
+      # the dev host unchanged.
+      - "${WEBAPP_PORT:-5000}:5000"
     networks:
       - my_network
     env_file:

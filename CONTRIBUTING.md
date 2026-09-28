@@ -377,8 +377,10 @@ Two gotchas:
   what actually decides what runs. The flip side is the real footgun — a bare
   `up -d` *also* starts the one-shot scraper and kicks off a ~20-minute scrape.
   #63 owns fixing both by profiling the one-shot.
-- `webapp` — Flask app served by gunicorn on `0.0.0.0:5000`, published to the
-  host, running as uid 10001. Has a `/healthz` healthcheck and waits on `db`
+- `webapp` — Flask app served by gunicorn on `0.0.0.0:5000` **inside the
+  container**, published to the host on `${WEBAPP_PORT:-5000}` (#90 — set it in
+  `Groceries/.env`, which is compose's *interpolation* file and not the same as
+  the repo-root `.env` that `env_file` passes into containers). Runs as uid 10001. Has a `/healthz` healthcheck and waits on `db`
   with `condition: service_healthy`.
 - `db_backup` — `postgres:16` image running `Groceries/backup.sh` in a loop
   (nightly `pg_dump`, #60). Runs as uid 1000 so dumps on the host are manageable
