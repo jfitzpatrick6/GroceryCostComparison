@@ -1337,6 +1337,33 @@ def _annotate_package_fit(match, needed_qty, needed_unit):
     match["total_cost"] = packages * float(match["price"])
 
 
+def summarize_where_to_buy(per_item, stores):
+    """(split_total, store_totals) for where-to-buy (#31) - pure, so it is
+    testable without a database (#70 phase 2).
+
+    split_total: buy every item at its cheapest store. store_totals: one entry
+    per store with what the items it carries would cost there and how many it
+    covers, stores covering the whole list first, then cheapest. A store missing
+    an item is never ranked as if that item were free.
+    """
+    split_total = sum(p["cheapest"]["total_cost"] for p in per_item) if per_item else None
+    store_totals = []
+    for store in sorted(stores):
+        total = 0.0
+        covered = 0
+        for p in per_item:
+            match = p["by_store"].get(store)
+            if match:
+                total += match["total_cost"]
+                covered += 1
+        store_totals.append({
+            "store": store, "total": total, "covered": covered,
+            "of_total": len(per_item), "covers_all": covered == len(per_item),
+        })
+    store_totals.sort(key=lambda s: (not s["covers_all"], s["total"]))
+    return split_total, store_totals
+
+
 @app.route("/list/where-to-buy")
 def where_to_buy():
     """The payoff feature (#31): for each unchecked list item, the cheapest
@@ -1393,22 +1420,7 @@ def where_to_buy():
     finally:
         conn.close()
 
-    split_total = sum(p["cheapest"]["total_cost"] for p in per_item) if per_item else None
-
-    store_totals = []
-    for store in sorted(all_stores):
-        total = 0.0
-        covered = 0
-        for p in per_item:
-            match = p["by_store"].get(store)
-            if match:
-                total += match["total_cost"]
-                covered += 1
-        store_totals.append({
-            "store": store, "total": total, "covered": covered,
-            "of_total": len(per_item), "covers_all": covered == len(per_item),
-        })
-    store_totals.sort(key=lambda s: (not s["covers_all"], s["total"]))
+    split_total, store_totals = summarize_where_to_buy(per_item, all_stores)
 
     return render_template(
         "where_to_buy.html", per_item=per_item, unmatched=unmatched,
