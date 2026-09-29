@@ -132,11 +132,11 @@ def _price_schema_current(cur):
     cur.execute("""
         SELECT column_name, data_type FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'grocery_prices'
-          AND column_name IN ('price', 'unit_price', 'unit', 'category')
+          AND column_name IN ('price', 'unit_price', 'unit', 'category', 'regular_price')
     """)
     columns = dict(cur.fetchall())
     if not (columns.get("price") == "numeric" and "unit_price" in columns and "unit" in columns
-            and "category" in columns):
+            and "category" in columns and "regular_price" in columns):
         return False
     # The view is `SELECT *`, which Postgres expands to a fixed column list when
     # the view is CREATED - a column added to the table later is not in it until
@@ -183,6 +183,8 @@ def _ensure_price_schema(cur):
     # predates it. _price_schema_current() requires it, so existing databases
     # get it on their next scrape.
     cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS category TEXT;")
+    # The regular price when `price` is a sale price (#19); NULL otherwise.
+    cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS regular_price NUMERIC;")
     # Postgres refuses ALTER COLUMN TYPE on a column any view
     # depends on, even for a no-op cast (see #53) - drop the
     # view first since it gets unconditionally recreated right
@@ -236,6 +238,16 @@ def _category(row):
     return value if isinstance(value, str) and value else None
 
 
+def _regular_price(row):
+    """RegularPrice as a float, or None (absent column, NaN, or not higher)."""
+    value = row.get('RegularPrice')
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value == value and value > float(row['Price']) else None
+
+
 def store_data(df):
     """Stores the scraped data in a PostgreSQL database. Raises on failure rather
     than swallowing it, so a broken run is visible instead of silently a no-op."""
@@ -261,13 +273,14 @@ def store_data(df):
             values.append((
                 row['Product'], row['Price'], row['Rate'], row['Size'],
                 row['store'], row['store_id'], row['Datetime'],
-                unit_price, unit, _category(row),
+                unit_price, unit, _category(row), _regular_price(row),
             ))
         with conn:
             with conn.cursor() as cur:
                 psycopg2.extras.execute_values(cur, """
                     INSERT INTO grocery_prices
-                        (product, price, rate, size, store, store_id, datetime, unit_price, unit, category)
+                        (product, price, rate, size, store, store_id, datetime, unit_price, unit, category,
+                         regular_price)
                     VALUES %s
                 """, values, page_size=1000)
         print(f"Inserted {len(df)} rows into grocery_prices.")

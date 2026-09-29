@@ -239,7 +239,20 @@ def _parse_item(item, calculate_rate_per_unit):
         size = item.get("size") or "N/A"
 
     rate = calculate_rate_per_unit(price, size) if size != "N/A" else "N/A"
-    return {"Product": [name], "Price": [price], "Rate": [rate], "Size": [size], "Category": [None]}
+    # #19: priceValueString is ALREADY the current (sale) price - measured live
+    # 2026-09-29, e.g. Cabot butter priceString "$3.79" with fullPriceString
+    # "$5.59". The regular price is recorded only when it's genuinely higher.
+    regular = None
+    full = price_view.get("fullPriceString")
+    if full:
+        try:
+            regular = float(str(full).strip().replace("$", "").replace(",", ""))
+        except ValueError:
+            regular = None
+        if regular is not None and regular <= price:
+            regular = None
+    return {"Product": [name], "Price": [price], "Rate": [rate], "Size": [size], "Category": [None],
+            "RegularPrice": [regular]}
 
 
 def scrape_store(retailer_slug, host, calculate_rate_per_unit, categories=True):
@@ -297,7 +310,7 @@ def scrape_store(retailer_slug, host, calculate_rate_per_unit, categories=True):
             browser.close()
 
     if not rows:
-        return pd.DataFrame(columns=["Product", "Price", "Rate", "Size", "Category"])
+        return pd.DataFrame(columns=["Product", "Price", "Rate", "Size", "Category", "RegularPrice"])
     # Leaf collections are usually disjoint, but a "sales" collection can
     # cross-list an item that's also in its normal category - dedupe those.
     # Deduped on the priced fields only, NOT Category: a cross-listed item now
@@ -305,6 +318,6 @@ def scrape_store(retailer_slug, host, calculate_rate_per_unit, categories=True):
     # ~1,700 Tops products (#96 measured the cross-listing). The first listing
     # wins, which is the department walk order - a real department before the
     # dynamic "sales" collection.
-    return pd.DataFrame(rows, columns=["Product", "Price", "Rate", "Size", "Category"]).drop_duplicates(
+    return pd.DataFrame(rows, columns=["Product", "Price", "Rate", "Size", "Category", "RegularPrice"]).drop_duplicates(
         subset=["Product", "Price", "Rate", "Size"], ignore_index=True
     )

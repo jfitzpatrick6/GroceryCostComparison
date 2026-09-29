@@ -498,5 +498,45 @@ class CategoryTests(unittest.TestCase):
         self.assertIsNone(BJs.bjs_category(["grocery>kids-grocery>grab-and-go-snacks"]))
 
 
+class ClubSalePriceTests(unittest.TestCase):
+    """#19. Shapes and values captured live 2026-09-29 (club id -> "9999")."""
+    TODAY = __import__("datetime").date(2026, 9, 29)
+
+    def _data(self, sale=None, original=None):
+        d = {"prices": {"9999": {"value": "18.99"}}}
+        if sale:
+            d["sale_prices"] = {"9999": sale, "online": {"salePrice": "1.00", "saleStart": "2026-09-01 00:00:00.0",
+                                                         "saleEnd": "2026-12-31 23:59:59.0"}}
+        if original:
+            d["original_price"] = {"9999": {"value": original}}
+        return d
+
+    def test_active_club_sale_is_the_price_and_regular_is_recorded(self):
+        # Tyson panko popcorn chicken: listed 18.99, club sale 14.99 until 10-01.
+        sale = {"salePrice": "14.99000", "saleStart": "2026-09-18 00:00:00.0", "saleEnd": "2026-10-01 23:59:59.0"}
+        self.assertEqual(BJs.club_sale_price(self._data(sale), "9999", 18.99, self.TODAY), (14.99, 18.99))
+
+    def test_expired_or_future_sale_is_ignored(self):
+        for start, end in [("2026-09-01", "2026-09-28"), ("2026-09-30", "2026-10-10")]:
+            sale = {"salePrice": "14.99", "saleStart": f"{start} 00:00:00.0", "saleEnd": f"{end} 23:59:59.0"}
+            self.assertEqual(BJs.club_sale_price(self._data(sale), "9999", 18.99, self.TODAY), (18.99, None))
+
+    def test_online_sale_is_never_used(self):
+        # Only the ship-to-home channel is on sale here.
+        self.assertEqual(BJs.club_sale_price(self._data(), "9999", 18.99, self.TODAY), (18.99, None))
+        data = self._data()
+        data["sale_prices"] = {"online": {"salePrice": "1.00", "saleStart": "2026-09-01 00:00:00.0",
+                                          "saleEnd": "2026-12-31 23:59:59.0"}}
+        self.assertEqual(BJs.club_sale_price(data, "9999", 18.99, self.TODAY), (18.99, None))
+
+    def test_already_reduced_price_records_the_original(self):
+        # Special K Pastry Crisps: prices 7.48, original_price 10.99.
+        self.assertEqual(BJs.club_sale_price(self._data(original="10.99"), "9999", 7.48, self.TODAY), (7.48, 10.99))
+
+    def test_malformed_sale_is_ignored_not_fatal(self):
+        sale = {"salePrice": "n/a", "saleStart": "soon", "saleEnd": None}
+        self.assertEqual(BJs.club_sale_price(self._data(sale), "9999", 18.99, self.TODAY), (18.99, None))
+
+
 if __name__ == "__main__":
     unittest.main()

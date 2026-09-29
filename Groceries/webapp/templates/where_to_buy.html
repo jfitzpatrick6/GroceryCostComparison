@@ -56,7 +56,7 @@
                     {% endif %}
                 </td>
                 <td><span class="badge badge--store">{{ p.cheapest.store }}</span></td>
-                <td class="num price">${{ "%.2f"|format(p.cheapest.price) }}</td>
+                <td class="num price">${{ "%.2f"|format(p.cheapest.price) }}{% if p.cheapest.regular_price %}<br><span class="badge badge--ok">sale &middot; was ${{ "%.2f"|format(p.cheapest.regular_price) }}</span>{% endif %}</td>
                 <td class="muted small">{{ p.cheapest.size }}</td>
                 <td class="num rate">{% if p.cheapest.unit_price is not none %}${{ "%.2f"|format(p.cheapest.unit_price) }} / {{ p.cheapest.unit }}{% else %}&mdash;{% endif %}</td>
                 <td class="num price">

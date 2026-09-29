@@ -44,6 +44,8 @@
             {% if row.category %}<div class="faint small">{{ row.category }}</div>{% endif %}
             <div class="row row--tight">
                 <span class="price">${{ "%.2f"|format(row.price) if row.price is not none else "?" }}</span>
+                {# On sale (#19): the price above is what's charged now. #}
+                {% if row.regular_price %}<span class="badge badge--ok">sale &middot; was ${{ "%.2f"|format(row.regular_price) }}</span>{% endif %}
                 {% if row.size %}<span class="muted small">{{ row.size }}</span>{% endif %}
                 {% if row.unit_price is not none %}<span class="rate">${{ "%.2f"|format(row.unit_price) }} / {{ row.unit }}</span>{% endif %}
             </div>

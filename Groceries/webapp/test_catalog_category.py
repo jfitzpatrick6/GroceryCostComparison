@@ -18,15 +18,16 @@ class _Cur:
         self._one = None
 
     def execute(self, sql, params=None):
-        if "information_schema.columns" in sql:
-            self._one = (1,) if self.has_category else None
-        else:
+        self._schema = "information_schema.columns" in sql
+        if not self._schema:
             self.selects.append(sql)
 
     def fetchone(self):
         return self._one
 
     def fetchall(self):
+        if self._schema:
+            return [("category",)] if self.has_category else []
         row = {"product": "TOPS Split Chicken Breast", "store": "Tops", "price": 5.0, "size": "1 lb",
                "unit_price": 5.0, "unit": "lb", "datetime": None}
         if self.has_category:
