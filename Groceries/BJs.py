@@ -33,7 +33,15 @@ _SIZE_UNITS = r"pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt"
 # "16 oz" -> take the whole matched size phrase as-is. The lookbehind stops it
 # reading a size out of the tail of a fraction: "Butterball Frozen Turkey
 # Burgers, 1/3 lb. Patties, 12 ct." was stored as "3 lb" (#73).
-_SIZE_RE = re.compile(rf"(?<![\d./])(([\d.]+)\s*({_SIZE_UNITS}))")
+#
+# The number is \d+(\.\d+)? rather than [\d.]+: the old class matched a bare
+# ".", so "The Little Potato Co. Little Yellows, 3 lbs." parsed as ". l" (from
+# "co. little") and units.py raised on float("."), losing the real 3 lb.
+#
+# "-" is in the lookbehind so a weight RANGE yields no size at all. Without it,
+# "Spare Ribs, 5-8.5 lbs." read as "8.5 lb" - the upper bound, a confident
+# wrong $/lb where the honest answer is none (CONTRIBUTING §6).
+_SIZE_RE = re.compile(rf"(?<![\d./-])((\d+(?:\.\d+)?)\s*({_SIZE_UNITS}))")
 
 # Multi-packs: "<count> <pack word> / <each size> <unit>" -> one total size.
 # Built from every BJs name containing "/" in the 2026-09-29 catalogue (961 of

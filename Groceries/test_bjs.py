@@ -377,9 +377,6 @@ class CollectProductsAccountingTests(unittest.TestCase):
         self.assertEqual(requested, [1, 2, 3], "walked past the end-of-catalogue page")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class ParseSizeTests(unittest.TestCase):
     """#73. Every name is verbatim from the 2026-09-29 catalogue export; the
@@ -421,6 +418,19 @@ class ParseSizeTests(unittest.TestCase):
     def test_per_item_range_falls_back_to_the_count(self):
         self.assertEqual(BJs.parse_size("Frito-Lay Variety Pack of Snacks and Chips, 30 ct./1.5-2 oz."), "30 ct")
 
+    def test_a_period_is_not_a_number(self):
+        # old: ". l" from "Co. Little", which units.py cannot parse
+        self.assertEqual(BJs.parse_size("The Little Potato Co. Little Yellows, 3 lbs."), "3 lb")
+
+    def test_a_weight_range_is_no_size_not_its_upper_bound(self):
+        self.assertEqual(
+            BJs.parse_size("Wellsley Farms Fresh Pork St. Louis Style Spare Ribs, 5-8.5 lbs."), "N/A"
+        )
+
     def test_plain_sizes_and_no_size(self):
         self.assertEqual(BJs.parse_size("Tyson Boneless Skinless Chicken Breast, 10 lbs."), "10 lb")
         self.assertEqual(BJs.parse_size("Wellsley Farms 1/2 Sheet Gold & Chocolate Base Cake, Serves 32"), "N/A")
+
+
+if __name__ == "__main__":
+    unittest.main()
