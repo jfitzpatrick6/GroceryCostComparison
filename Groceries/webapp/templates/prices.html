@@ -52,6 +52,7 @@
                    same filter in /list/pick). #}
                 {% if row.price is not none %}
                 <form method="post" action="/list/add_pinned">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="name" value="{{ row.product }}">
                     <input type="hidden" name="product" value="{{ row.product }}">
                     <input type="hidden" name="store" value="{{ row.store }}">
@@ -59,6 +60,7 @@
                 </form>
                 {% endif %}
                 <form method="post" action="/staples/pin">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="product" value="{{ row.product }}">
                     <input type="hidden" name="store" value="{{ row.store }}">
                     <button type="submit" class="btn btn--sm btn--quiet" title="Pin to staples so it is always compared across stores">Pin</button>
@@ -104,12 +106,14 @@
                        then had no way to get it onto the list. #}
                     <div class="row row--tight">
                         <form method="post" action="/list/add_pinned">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="name" value="{{ row.product }}">
                             <input type="hidden" name="product" value="{{ row.product }}">
                             <input type="hidden" name="store" value="{{ row.store }}">
                             <button type="submit" class="btn btn--sm" title="Add this exact product to the grocery list, pinned to it">Add</button>
                         </form>
                         <form method="post" action="/staples/pin">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="product" value="{{ row.product }}">
                             <input type="hidden" name="store" value="{{ row.store }}">
                             <button type="submit" class="btn btn--sm btn--quiet" title="Pin to staples so it is always compared across stores">Pin</button>

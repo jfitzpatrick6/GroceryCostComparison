@@ -24,6 +24,7 @@
                     <span class="badge badge--muted">already on list</span>
                 {% else %}
                 <form method="post" action="/list/add">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="name" value="{{ r.name }}">
                     <input type="hidden" name="qty" value="{{ r.threshold|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %}">
                     <button type="submit" class="btn btn--sm">Add {{ r.threshold|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %}</button>
@@ -38,6 +39,7 @@
 
 <div class="card">
     <form method="post" action="/list/add" class="form-row">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="field">
             <label class="label" for="li-name">Item</label>
             <input type="text" id="li-name" name="name" placeholder="e.g. chicken breast" required autocomplete="off">
@@ -84,6 +86,7 @@
                 <td data-label="" class="td--check">
                     <span class="print-box" aria-hidden="true"></span>
                     <form method="post" action="/list/check">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="id" value="{{ item.id }}">
                         <input type="hidden" name="checked" value="{{ 0 if item.checked else 1 }}">
                         <button type="submit" class="btn btn--sm {{ '' if item.checked else 'btn--primary' }}">
@@ -125,6 +128,7 @@
                 <td data-label="" class="num td--remove">
                     <form method="post" action="/list/remove"
                           onsubmit='return confirm({{ ("Remove " ~ item.name ~ " from the list?")|tojson }});'>
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="id" value="{{ item.id }}">
                         <button type="submit" class="btn btn--sm btn--quiet">Remove</button>
                     </form>

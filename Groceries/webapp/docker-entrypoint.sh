@@ -15,6 +15,17 @@ set -e
 
 python init_schema.py
 
+# SECRET_KEY signs sessions and CSRF tokens (#69). When .env doesn't set one,
+# generate a random key HERE, before gunicorn forks, so both workers share it -
+# a per-worker key would reject every other request's token. It changes on
+# every container start, which resets sessions; set SECRET_KEY in .env to keep
+# them. Never a constant: a token signed with a published key is not a token.
+if [ -z "${SECRET_KEY:-}" ]; then
+    SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+    export SECRET_KEY
+    echo "SECRET_KEY not set - using a random key for this container run (sessions reset on restart; set SECRET_KEY in .env to keep them)"
+fi
+
 # Gunicorn rather than `python app.py` (#61), which ran Werkzeug's development
 # server - its own banner said "Do not use it in a production deployment".
 #

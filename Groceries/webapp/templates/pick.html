@@ -42,6 +42,7 @@
     {% for r in rows %}
     <li class="pick">
         <form method="post" action="/list/add_pinned" class="pick__form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="name" value="{{ r.product }}">
             <input type="hidden" name="product" value="{{ r.product }}">
             <input type="hidden" name="store" value="{{ r.store }}">

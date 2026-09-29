@@ -27,6 +27,7 @@
                 <td class="muted">{{ row.last_cooked.strftime("%a %d %b %Y") if row.last_cooked else "&mdash;" }}</td>
                 <td class="num">
                     <form method="post" action="/history/readd">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="recipe_id" value="{{ row.id }}">
                         <button type="submit" class="btn btn--sm">Cook again</button>
                     </form>

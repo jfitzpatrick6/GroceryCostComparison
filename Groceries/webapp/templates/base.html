@@ -49,6 +49,7 @@
 
             <div class="who">
                 <form method="post" action="/profiles/switch" class="row row--tight">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <label class="who__label" for="profile-switch">Who</label>
                     <select id="profile-switch" name="name" onchange="this.form.submit()">
                         <option value="">nobody</option>

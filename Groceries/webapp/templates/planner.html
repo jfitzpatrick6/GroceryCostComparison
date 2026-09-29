@@ -55,6 +55,7 @@
                             <span class="chip__name">{{ r.recipe_name }}</span>
                             {% if r.recipe_servings %}
                             <form method="post" action="/planner/set_servings" class="chip__form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <input type="hidden" name="week_start" value="{{ week_start }}">
                                 <input type="hidden" name="day_of_week" value="{{ day.index }}">
                                 <input type="hidden" name="recipe_id" value="{{ r.recipe_id }}">
@@ -70,6 +71,7 @@
                             </form>
                             {% endif %}
                             <form method="post" action="/planner/remove_recipe" class="chip__form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <input type="hidden" name="week_start" value="{{ week_start }}">
                                 <input type="hidden" name="day_of_week" value="{{ day.index }}">
                                 <input type="hidden" name="recipe_id" value="{{ r.recipe_id }}">
@@ -83,6 +85,7 @@
                         <span class="chip chip--extra">
                             <span class="chip__name">{% if e.amount %}{{ e.amount }} {% endif %}{% if e.unit %}{{ e.unit }} {% endif %}{{ e.name }}</span>
                             <form method="post" action="/planner/remove_extra" class="chip__form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <input type="hidden" name="week_start" value="{{ week_start }}">
                                 <input type="hidden" name="extra_id" value="{{ e.id }}">
                                 <input type="hidden" name="meal" value="{{ meal }}">
@@ -95,6 +98,7 @@
                     {% endif %}
                     <div class="day-add">
                         <form method="post" action="/planner/set" class="form-row">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             {# These three hidden fields are the entire identity of
                                the slot being edited. The route reads them with
                                request.form[...] unguarded, so a missing one is a
@@ -117,6 +121,7 @@
                             <noscript><button type="submit" class="btn btn--sm">Add</button></noscript>
                         </form>
                         <form method="post" action="/planner/add_extra" class="form-row">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="week_start" value="{{ week_start }}">
                             <input type="hidden" name="day_of_week" value="{{ day.index }}">
                             <input type="hidden" name="meal" value="{{ meal }}">
@@ -132,6 +137,7 @@
                 <td>
                     {% if day.recipes %}
                     <form method="post" action="/planner/cook">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="week_start" value="{{ week_start }}">
                         <input type="hidden" name="day_of_week" value="{{ day.index }}">
                         <input type="hidden" name="meal" value="{{ meal }}">
@@ -151,6 +157,7 @@
                         <div class="used__title">Used tonight</div>
                         {% for u in day.used_tonight %}
                         <form method="post" action="/planner/adjust_used" class="used__row">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="week_start" value="{{ week_start }}">
                             <input type="hidden" name="day_of_week" value="{{ day.index }}">
                             <input type="hidden" name="meal" value="{{ meal }}">
