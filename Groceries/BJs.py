@@ -19,6 +19,7 @@ this module in CI. Same reasoning retention.py's module docstring gives for
 existing separately from collector.py.
 """
 
+import datetime
 import json
 import os
 import re
@@ -91,7 +92,41 @@ def parse_size(product_name):
     match = _SIZE_RE.search(name)
     return match.group(1) if match else 'N/A'
 
-ROW_COLUMNS = ["Product", "Price", "Rate", "Size", "Category"]
+ROW_COLUMNS = ["Product", "Price", "Rate", "Size", "Category", "RegularPrice"]
+
+
+def club_sale_price(data, store, listed, today=None):
+    """(price to compare, regular price or None) for one BJs product (#19).
+
+    Measured live 2026-09-29: `prices.<club>` is the REGULAR club price; an
+    active club sale is separate, in `sale_prices.<club>` as {salePrice,
+    saleStart, saleEnd}. Reading only `prices` meant every BJs sale was
+    compared at full price - Tyson panko popcorn chicken at $18.99 while on
+    sale for $14.99 - biasing /list/where-to-buy against BJs. Some products
+    instead show an already-reduced `prices` value with the old one in
+    `original_price.<club>`.
+
+    The sale applies only between its start and end dates (inclusive, by date;
+    the scrape runs at 03:00 so a sale starting "today" has started), and only
+    if it is actually lower. `online` sale prices are never used - they are the
+    ship-to-home channel, same reasoning as #96's no_store_price.
+    """
+    today = today or datetime.date.today()
+    sale = (data.get('sale_prices') or {}).get(store) or {}
+    try:
+        sale_price = float(sale['salePrice'])
+        start = datetime.date.fromisoformat(str(sale['saleStart'])[:10])
+        end = datetime.date.fromisoformat(str(sale['saleEnd'])[:10])
+    except (KeyError, TypeError, ValueError):
+        sale_price = None
+    if sale_price is not None and start <= today <= end and 0 < sale_price < listed:
+        return round(sale_price, 2), listed
+    original = (data.get('original_price') or {}).get(store) or {}
+    try:
+        was = float(str(original['value']).strip().removeprefix("$"))
+    except (KeyError, TypeError, ValueError):
+        was = None
+    return listed, (was if was is not None and was > listed else None)
 
 # group_ids under "grocery>" that are NOT departments - brand pages and
 # cross-cutting collections a product also appears in. Observed live on
@@ -168,6 +203,9 @@ def parse_product(product, store):
             if f.get('values')
         }
 
+        # Sale pricing for weighted items isn't handled: their price comes from
+        # a per-lb min/max range, not prices/sale_prices (#16, #51).
+        regular_price = None
         if facets.get('weighted_item') == 'Y':
             # By-weight items (produce, fresh meat/poultry) don't carry a
             # correct `prices` entry for rate purposes - BJs only exposes a
@@ -245,8 +283,8 @@ def parse_product(product, store):
                 # with no key in it makes that unreachable rather than
                 # something a future reader has to remember.
                 return None, NO_STORE_PRICE
-            product_price = prices[store]['value']
-            product_price = float(product_price.strip().removeprefix("$"))
+            product_price = float(prices[store]['value'].strip().removeprefix("$"))
+            product_price, regular_price = club_sale_price(product.get('data', {}), store, product_price)
             product_size = parse_size(product_name)
 
         row = {
@@ -255,6 +293,7 @@ def parse_product(product, store):
             "Rate": calculate_rate_per_unit(product_price, product_size),
             "Size": product_size,
             "Category": bjs_category(product.get('data', {}).get('group_ids')),
+            "RegularPrice": regular_price,
         }
         return row, None
     except Exception as e:

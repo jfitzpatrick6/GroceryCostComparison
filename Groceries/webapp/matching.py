@@ -584,12 +584,14 @@ def load_catalog(cur):
     # schema step, possibly not until 03:00), and selecting a missing column
     # would 500 every price page in that window. Rows then lack "category" and
     # the page simply shows none.
+    # regular_price (#19) follows the same rule, for the same reason.
     cur.execute("""
-        SELECT 1 FROM information_schema.columns
+        SELECT column_name FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'grocery_prices_latest'
-          AND column_name = 'category'
+          AND column_name IN ('category', 'regular_price')
     """)
-    extra = ", category" if cur.fetchone() else ""
+    present = {row[0] if not isinstance(row, dict) else row["column_name"] for row in cur.fetchall()}
+    extra = "".join(f", {c}" for c in ("category", "regular_price") if c in present)
     cur.execute(
         f"SELECT product, store, price, size, unit_price, unit, datetime{extra} FROM grocery_prices_latest"
     )

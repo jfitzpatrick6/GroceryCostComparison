@@ -145,3 +145,21 @@ class StoreNameRoutingTests(unittest.TestCase):
     def test_product_query_uses_the_matcher(self):
         _, loads = self._get("chicken breast")
         self.assertEqual(loads, 1)
+
+
+class SaleBadgeTests(unittest.TestCase):
+    """#19: a product on sale shows what it was. Real row from the live BJs
+    scrape of 2026-09-29 (Tyson panko popcorn chicken, club sale)."""
+
+    def test_sale_badge_on_search_results(self):
+        seq, raw = matching.token_sequences("Tyson Frozen All Natural Panko Breaded Popcorn Chicken, 3.5 lbs.")
+        row = {"store": "BJs", "product": "Tyson Frozen All Natural Panko Breaded Popcorn Chicken, 3.5 lbs.",
+               "price": 14.99, "regular_price": 18.99, "size": "3.5 lb", "unit_price": 4.28, "unit": "lb",
+               "datetime": None, "category": "Frozen Foods > Frozen Meat",
+               "_tokens": frozenset(seq), "_token_seq": seq, "_raw_seq": raw}
+        app.app.config["TESTING"] = True
+        with unittest.mock.patch.object(app, "get_connection", _Conn), \
+                unittest.mock.patch.object(matching, "cached_catalog", lambda cur: [row]):
+            body = app.app.test_client().get("/prices", query_string={"q": "popcorn chicken"}).data.decode()
+        self.assertIn("$14.99", body)
+        self.assertIn("sale &middot; was $18.99", body)
