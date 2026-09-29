@@ -2471,14 +2471,9 @@ _USDA_SEARCH_ALIASES = {
     # alias has to issue a *different* query, not reorder the same one.
     # "peppers sweet red raw" surfaces 170108 and lands on it.
     #
-    # It resolves to 92g/cup, not 149g: FDC's real portion order for 170108
-    # puts "cup, sliced" before "cup, chopped" and the portion loop takes the
-    # first modifier match. Green (170427) has the opposite order and so
-    # returns 149g/cup - a 62% red/green divergence for the same vegetable
-    # that comes purely from FDC's per-entry ordering. Deliberately not
-    # resolved here (#78 owns the first-match-wins policy for every
-    # ingredient, not just peppers); fixing it in this PR would be an
-    # unrelated change to a heuristic that needs auditing against real data.
+    # This alias fixes the entry (identity). Which cup PORTION of it applies -
+    # "cup, sliced" 92g or "cup, chopped" 149g - is #78's choose_portion(): the
+    # recipe's form decides, and an unqualified cup has no estimate.
     #
     # Yellow's equivalent (169383) has no cup/tbsp data in real FDC data
     # either - verified: aliasing "yellow bell pepper" to "peppers sweet
@@ -2550,18 +2545,27 @@ def ensure_ingredient_conversions_table(cur):
 # Policy, deliberately and in this order:
 #   1. The recipe says the form ("chopped onion", "brown sugar, packed") and
 #      exactly one portion carries it -> that portion.
-#   2. Every matching portion agrees within PORTION_AGREEMENT -> their median.
+#   2. The recipe names a form no portion carries ("melted butter") -> no
+#      estimate: the form may change the weight, so an unqualified portion
+#      would be a guess (#54 already decided melted butter must be None).
+#   3. Every matching portion agrees within PORTION_AGREEMENT -> their median.
 #      The form doesn't matter at that point, so neither does FDC's order.
-#   3. The recipe names a form no portion carries -> no estimate.
 #   4. Otherwise -> no estimate. #78 is explicit that silently preferring one of
 #      two genuinely different forms is worse than None, and so is this
 #      codebase ("a missing purchase estimate is fine, a wrong one silently
 #      corrupts the shopping list"). Recipes usually name the form, which
 #      rule 1 then honours.
+# Only words that describe a PREPARATION and are never part of a food's name.
+# Deliberately excluded, though FDC uses them as portion modifiers: "ground"
+# ("ground beef" is Beef, ground), "whole" ("whole milk"), "crushed" ("crushed
+# tomatoes"), "mashed", "shredded" - stripping those changed the food searched
+# for. The trade-off was measured the other way too: searching the full name
+# first instead made "chopped onion" resolve to a processed-onion entry at 210
+# g/cup rather than "Onions, raw" at 160. Cost of the exclusion: pepper by the
+# tsp ("tsp, ground" 2.3 vs "tsp, whole" 2.9) has no estimate.
 _FORM_WORDS = (
-    "chopped", "sliced", "diced", "minced", "grated", "shredded", "packed",
-    "unpacked", "sifted", "unsifted", "ground", "whole", "melted", "crushed",
-    "cubed", "mashed", "halved",
+    "chopped", "sliced", "diced", "minced", "grated", "packed", "unpacked",
+    "sifted", "unsifted", "melted", "cubed", "halved",
 )
 _FORM_WORD_RE = re.compile(r"\b(" + "|".join(_FORM_WORDS) + r")\b", re.IGNORECASE)
 PORTION_AGREEMENT = 0.15
@@ -2611,13 +2615,24 @@ def _usda_grams_per_unit(name, measure_words):
     api_key = os.getenv("USDA_API_KEY")
     if not api_key:
         return None
+    # #78: form words ("chopped") choose the portion; they are not part of the
+    # food's identity, so they are removed before searching. See _FORM_WORDS for
+    # why words like "ground" and "whole" are deliberately not treated as forms.
+    base_name, forms = _split_form_words(name)
+    result = _usda_resolve(base_name, measure_words, forms, api_key)
+    return None if result is _NO_IDENTITY else result
+
+
+_NO_IDENTITY = object()  # sentinel: the search found no food at all
+
+
+def _usda_resolve(query, measure_words, forms, api_key):
+    """One FDC search + portion choice for `query`. Returns grams per unit, None
+    (a food was found but no confident portion), or _NO_IDENTITY."""
     try:
         # #54: search the alias's biased phrase for known-ambiguous names
         # (see _USDA_SEARCH_ALIASES above), the raw name otherwise.
-        # #78: form words ("chopped") choose the portion below; they are not
-        # part of the food's identity, so they are removed before searching.
-        base_name, forms = _split_form_words(name)
-        search_name = _USDA_SEARCH_ALIASES.get(base_name.strip().lower(), base_name)
+        search_name = _USDA_SEARCH_ALIASES.get((query or "").strip().lower(), query)
         search = requests.get(
             "https://api.nal.usda.gov/fdc/v1/foods/search",
             params={"query": search_name, "pageSize": 10, "dataType": "SR Legacy,Foundation", "api_key": api_key},
@@ -2651,7 +2666,7 @@ def _usda_grams_per_unit(name, measure_words):
 
         foods = [f for f in foods if _word_hits(f.get("description", ""))]
         if not foods:
-            return None
+            return _NO_IDENTITY
 
         # #54: prefer a description that *starts with* one of the query
         # words over one where the word merely appears somewhere in it.

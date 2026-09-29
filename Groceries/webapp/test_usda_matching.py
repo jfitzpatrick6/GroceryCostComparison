@@ -243,10 +243,10 @@ class MockedUsdaMatchingTests(unittest.TestCase):
         patcher.start()
 
     def test_pepper_resolves_to_spice_not_vegetable(self):
-        # #54: bare "pepper" must be the spice, not "Pepper, banana, raw". Since #78 the
-        # spice's "tsp, ground" 2.3g vs "tsp, whole" 2.9g (26% apart) means an unqualified
-        # tsp is no estimate - so identity is asserted through the named form.
-        self.assertEqual(app._usda_grams_per_unit("ground pepper", ["tsp"]), 2.3)
+        # #54: bare "pepper" must be the spice, not "Pepper, banana, raw". Since #78,
+        # "tsp, ground" 2.3 vs "tsp, whole" 2.9 (26% apart) leaves tsp without an
+        # estimate, so identity is asserted through the spice's only tbsp portion.
+        self.assertEqual(app._usda_grams_per_unit("pepper", app._USDA_MEASURE_WORDS["tbsp"]), 6.9)
         self.assertIsNone(app._usda_grams_per_unit("pepper", ["tsp"]))
     def test_portion_policy_on_real_audited_values(self):
         # #78, values captured live 2026-09-29.
@@ -260,6 +260,14 @@ class MockedUsdaMatchingTests(unittest.TestCase):
         self.assertEqual(app.choose_portion(brown_sugar, {"packed"}), 220.0)  # not "unpacked"
         self.assertEqual(app.choose_portion(brown_sugar, {"unpacked"}), 145.0)
         self.assertEqual(app._split_form_words("brown sugar, packed"), ("brown sugar", {"packed"}))
+
+    def test_identity_words_are_not_stripped_as_forms(self):
+        # Review of #78: stripping these changed the FOOD searched for - live,
+        # "whole milk" 245 -> None, "ground cinnamon" 2.6 -> None, "crushed
+        # tomatoes" 242 -> None. They stay part of the name.
+        for name in ["whole milk", "ground cinnamon", "ground beef", "crushed tomatoes",
+                     "mashed potatoes", "whole wheat flour", "shredded cheddar cheese"]:
+            self.assertEqual(app._split_form_words(name), (name, set()), name)
 
     def test_butter_resolves_to_plain_butter_not_ghee(self):
         # The #54 headline bug: bare "butter" used to top-match "Butter,
@@ -386,10 +394,10 @@ class LiveUsdaApiTests(unittest.TestCase):
     code."""
 
     def test_pepper_is_the_spice(self):
-        # #54: bare "pepper" must be the spice, not "Pepper, banana, raw". Since #78 the
-        # spice's "tsp, ground" 2.3g vs "tsp, whole" 2.9g (26% apart) means an unqualified
-        # tsp is no estimate - so identity is asserted through the named form.
-        self.assertEqual(app._usda_grams_per_unit("ground pepper", ["tsp"]), 2.3)
+        # #54: bare "pepper" must be the spice, not "Pepper, banana, raw". Since #78,
+        # "tsp, ground" 2.3 vs "tsp, whole" 2.9 (26% apart) leaves tsp without an
+        # estimate, so identity is asserted through the spice's only tbsp portion.
+        self.assertEqual(app._usda_grams_per_unit("pepper", app._USDA_MEASURE_WORDS["tbsp"]), 6.9)
         self.assertIsNone(app._usda_grams_per_unit("pepper", ["tsp"]))
     def test_butter_is_plain_butter(self):
         # "Butter, salted", fdcId 173410 -> 1 cup = 227g.
@@ -419,10 +427,8 @@ class LiveUsdaApiTests(unittest.TestCase):
         self.assertEqual(app._usda_grams_per_unit("sugar", ["cup"]), 200.0)
 
     def test_black_pepper_phrase_also_resolves_correctly(self):
-        # Two-word phrase reaches the spice too. #78: ground 2.3g vs whole 2.9g per tsp,
-        # so the form is needed for a number.
-        self.assertEqual(app._usda_grams_per_unit("ground black pepper", ["tsp"]), 2.3)
-        self.assertIsNone(app._usda_grams_per_unit("black pepper", ["tsp"]))
+        # Two-word phrase reaches the spice too (tbsp: its one unambiguous portion).
+        self.assertEqual(app._usda_grams_per_unit("black pepper", app._USDA_MEASURE_WORDS["tbsp"]), 6.9)
     def test_bell_pepper_gets_a_real_estimate(self):
         # #78: 170108/170427 carry "cup, sliced" 92g AND "cup, chopped" 149g (62%
         # apart). The old 92/149 split was only FDC's list order; an unqualified
