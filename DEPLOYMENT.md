@@ -88,20 +88,14 @@ cd Groceries
 docker compose up -d --build
 ```
 
-**Know what this starts before you run it.** There is no `profiles:` key in
-`docker-compose.yml`, so a bare `up -d` starts **every** service — including
-`grocery_scraper`, the *one-shot* scraper, which will immediately begin a full
-scrape (Tops alone is on the order of 20 minutes, walking ~170 category pages
-through a headless browser). That is fine on a first deploy, where you want price
-data, but it is not what you want on every subsequent `up`. Issue #63 tracks
-profiling the one-shot service so the default set is `db`, `webapp`,
-`scraper_scheduler` and `db_backup`.
+This starts `db`, `webapp`, `db_backup` and `scraper_scheduler`. The one-shot
+`grocery_scraper` is behind the `manual` profile and is **not** started (#63).
 
-To start without the one-shot scrape:
-
-```
-docker compose up -d --build db webapp scraper_scheduler db_backup
-```
+On a first deploy the database has no prices, so `scraper_scheduler` runs a
+**catch-up scrape immediately** rather than waiting for 03:00 - expect about 20
+minutes before `/prices` fills in (Tops walks ~170 category pages through a
+headless browser). It does the same after any outage that left prices more than
+26 hours old.
 
 Startup is ordered, not parallel: `db` has a `pg_isready` healthcheck and the
 other services wait on `condition: service_healthy`, so nothing connects before
@@ -111,8 +105,8 @@ Postgres is actually accepting connections.
 > socket, which the postgres image's *temporary* initdb server also listens on.
 > Measured: the socket reports ready ~2.2s before TCP does, and clients
 > connecting in that window get `FATAL: the database system is shutting down`.
-> The webapp survives it (its schema init retries); the one-shot scraper does
-> not, because it connects once with no retry and no restart policy.
+> The webapp survives it (its schema init retries); a scrape does not, because
+> collector.py connects once with no retry.
 
 ## 3. Confirm it came up correctly
 
@@ -291,14 +285,19 @@ location IP-geolocates to. If gigabyte is not physically near the stores you
 shop at, the scraped prices will be for the wrong locations. Check this before
 trusting the where-to-buy page.
 
-> **Price staleness is currently invisible in the UI.** `/list/where-to-buy`
-> shows no price date, so a six-week-old dataset presents with the same
-> confidence as this morning's. #62 tracks fixing it. Until then, check
-> freshness by hand:
-> ```
-> docker compose exec db psql -U user -d grocery_db -c \
->   "SELECT store, max(datetime)::date AS last_scrape, count(*) FROM grocery_prices GROUP BY store ORDER BY store"
-> ```
+Each run ends with a `Run summary: OK|PARTIAL|FAILED - ...` line; grep for it
+to answer "did last night's scrape work?" in one line. Walmart's failure is
+expected and does not make a run PARTIAL. The where-to-buy page shows each
+store's price age (#62), so stale data is visible to the household too.
+
+To check freshness directly:
+
+```
+docker compose exec db psql -U user -d grocery_db -c \
+  "SELECT store, max(datetime)::date AS last_scrape FROM grocery_prices GROUP BY store ORDER BY store"
+```
+
+To force a scrape now: `docker compose --profile manual run --rm grocery_scraper`.
 
 ## 7. Routine operations
 

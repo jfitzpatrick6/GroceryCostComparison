@@ -8,4 +8,8 @@
 # .env.runtime is written by scheduler_entrypoint.sh at container start -
 # cron does not inherit the container's runtime environment (DB_HOST,
 # BJS_STORE, etc) by default, so the job sources it explicitly.
-0 3 * * * root cd /app && . /app/.env.runtime && python collector.py >> /proc/1/fd/1 2>> /proc/1/fd/2
+#
+# flock shares /tmp/scrape.lock with scheduler_entrypoint.sh's catch-up scrape
+# (#63): if that is still running at 03:00, this run is skipped and says so
+# (exit 75 is flock's "lock held" code here, distinct from a failed scrape).
+0 3 * * * root cd /app && . /app/.env.runtime && { flock -n -E 75 /tmp/scrape.lock python collector.py; [ $? -eq 75 ] && echo "Skipped 03:00 scrape: another scrape still holds the lock"; } >> /proc/1/fd/1 2>> /proc/1/fd/2

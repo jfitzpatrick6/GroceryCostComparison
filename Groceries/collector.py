@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 
 import pandas as pd
@@ -7,6 +8,7 @@ import psycopg2
 import aldis
 import BJs
 import retention
+import run_status
 import tops
 import units
 import Walmart
@@ -57,15 +59,22 @@ def get_data():
     run_start = time.monotonic()
 
     frames = []
+    outcomes = []
     for store_name, scrape_fn, store_id in stores:
         try:
             df = _timed_scrape(store_name, scrape_fn, store_id)
         except Exception as e:
             print(f"[{store_name}] scrape failed, skipping this store: {e}")
+            outcomes.append((store_name, None, e))
             continue
+        outcomes.append((store_name, len(df), None))
         df['store'] = store_name
         df['store_id'] = store_id
         frames.append(df)
+
+    # Printed before the all-failed raise below, so a FAILED run still gets
+    # its one-line verdict in the log (#63).
+    print(run_status.run_summary(outcomes)[1])
 
     if not frames:
         raise RuntimeError("Every store's scraper failed - nothing to store.")
@@ -200,7 +209,32 @@ def store_data(df):
         conn.close()
 
 
+def newest_price_time():
+    """max(datetime) in grocery_prices, or None if the table is empty or does
+    not exist yet (a fresh deploy, before the first scrape has created it)."""
+    conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('grocery_prices')")
+            if cur.fetchone()[0] is None:
+                return None
+            cur.execute("SELECT max(datetime) FROM grocery_prices")
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
 def main():
+    # --if-stale: scheduler_entrypoint.sh runs this once at container start.
+    # cron never catches up on a missed 03:00, so a host that was off or
+    # rebooting then silently skipped a day, and a fresh deploy showed an empty
+    # app until the next 03:00 (#63). Scrape now only if prices are actually old.
+    if "--if-stale" in sys.argv[1:]:
+        newest = newest_price_time()
+        if not run_status.is_stale(newest):
+            print(f"Startup check: newest prices are from {newest}, not stale - no catch-up scrape.")
+            return
+        print(f"Startup check: newest prices are from {newest or 'never'} - running a catch-up scrape.")
     data = get_data()
     store_data(data)
 
