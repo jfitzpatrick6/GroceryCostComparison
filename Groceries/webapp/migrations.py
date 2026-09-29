@@ -56,6 +56,11 @@ def _clear_chocolate_conversions(cur):
     cur.execute("DELETE FROM ingredient_conversions WHERE lower(name) IN ('milk chocolate', 'chocolate milk')")
 
 
+def _clear_chocolate_mix_conversions(cur):
+    """#131: same reason as migration 3, for "chocolate milk mix"."""
+    cur.execute("DELETE FROM ingredient_conversions WHERE lower(name) = 'chocolate milk mix'")
+
+
 MIGRATIONS = [
     (1, "baseline: every app table as of #66", app.ensure_app_schema),
     (2, "clear USDA conversions cached under first-match portion choice (#78)",
@@ -64,6 +69,8 @@ MIGRATIONS = [
      _clear_misidentified_conversions),
     (4, "clear USDA conversions cached for the chocolate aliases (#126)",
      _clear_chocolate_conversions),
+    (5, "clear USDA conversions cached for chocolate milk mix (#131)",
+     _clear_chocolate_mix_conversions),
 ]
 
 

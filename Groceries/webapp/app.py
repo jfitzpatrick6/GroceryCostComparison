@@ -2577,6 +2577,10 @@ _USDA_SEARCH_ALIASES = {
     # the fluid commercial chocolate-milk entry (250 g/cup).
     "milk chocolate": "candies milk chocolate",
     "chocolate milk": "milk chocolate fluid commercial reduced fat",
+    # #131: "chocolate milk mix" resolved to "Rennin, chocolate, dry mix,
+    # prepared with 2% milk" (142 g/cup) - a pudding-type dessert. The drink
+    # powder is FDC 173182 "Beverages, rich chocolate, powder".
+    "chocolate milk mix": "beverages rich chocolate powder",
 }
 
 

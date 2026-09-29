@@ -498,5 +498,11 @@ class LiveUsdaApiTests(unittest.TestCase):
         self.assertEqual(app._usda_grams_per_unit("milk chocolate", ["cup"]), 168.0)
         self.assertNotIn(app._usda_grams_per_unit("chocolate milk", ["cup"]), (None, 137.0, 168.0))
 
+    def test_131_chocolate_milk_mix_is_the_drink_powder(self):
+        # Was 142 g/cup from a rennin dessert mix; the drink powder is lighter per cup.
+        grams = app._usda_grams_per_unit("chocolate milk mix", app._USDA_MEASURE_WORDS["tbsp"])
+        self.assertIsNotNone(grams)
+        self.assertNotEqual(grams, 142.0)
+
 if __name__ == "__main__":
     unittest.main()
