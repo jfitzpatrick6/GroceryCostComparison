@@ -4,6 +4,7 @@ import time
 
 import pandas as pd
 import psycopg2
+import psycopg2.extras
 
 import aldis
 import BJs
@@ -251,19 +252,24 @@ def store_data(df):
                 if not _price_schema_current(cur):
                     print("Price schema missing or out of date - creating/upgrading it.")
                     _ensure_price_schema(cur)
+        # One multi-row INSERT per 1,000 rows (#74), instead of iterrows() - a
+        # Series built per row - and one network round trip per row. Values are
+        # computed exactly as before, row by row, so what lands is identical.
+        values = []
+        for row in df.to_dict("records"):
+            unit_price, unit = _numeric_rate(row['Price'], row['Size'])
+            values.append((
+                row['Product'], row['Price'], row['Rate'], row['Size'],
+                row['store'], row['store_id'], row['Datetime'],
+                unit_price, unit, _category(row),
+            ))
         with conn:
             with conn.cursor() as cur:
-                for _, row in df.iterrows():
-                    unit_price, unit = _numeric_rate(row['Price'], row['Size'])
-                    cur.execute("""
-                        INSERT INTO grocery_prices
-                            (product, price, rate, size, store, store_id, datetime, unit_price, unit, category)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        row['Product'], row['Price'], row['Rate'], row['Size'],
-                        row['store'], row['store_id'], row['Datetime'],
-                        unit_price, unit, _category(row),
-                    ))
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO grocery_prices
+                        (product, price, rate, size, store, store_id, datetime, unit_price, unit, category)
+                    VALUES %s
+                """, values, page_size=1000)
         print(f"Inserted {len(df)} rows into grocery_prices.")
 
         # Retention (#65), after the scrape's own transaction has committed and
