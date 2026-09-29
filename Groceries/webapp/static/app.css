@@ -706,6 +706,40 @@ tr.is-low > td:first-child { box-shadow: inset 3px 0 0 var(--warning); }
    inputs would blow out the row height. */
 .num-input { width: 5em; min-height: 2.25rem; padding: 0.2rem 0.4rem; text-align: right; }
 
+/* --- Product picker (#98) ----------------------------------------------------
+   A list rather than a table, because each row is a self-contained form: the
+   hidden product/store fields, an optional qty and an Add button all belong to
+   one product. A table would put the form tag across cells, which is invalid
+   HTML and the usual source of "the button submits the wrong row" bugs. */
+.pick-list { list-style: none; margin: var(--space-4) 0 0; padding: 0; }
+.pick {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    margin-bottom: var(--space-2);
+}
+.pick:hover { border-color: var(--border-strong); }
+.pick__form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    gap: var(--space-3);
+    align-items: center;
+    padding: var(--space-3) var(--space-4);
+}
+.pick__main { min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.pick__name { font-weight: 600; overflow-wrap: anywhere; }
+.pick__price { display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
+.pick__qty input { width: 5.5em; }
+/* Below a phone width the four columns cannot fit, so it becomes two rows:
+   name and price, then qty and the button. Still no sideways scrolling. */
+@media (max-width: 620px) {
+    .pick__form { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
+    .pick__price { grid-column: 2; grid-row: 1; }
+    .pick__qty { grid-column: 1; grid-row: 2; }
+    .pick__action { grid-column: 2; grid-row: 2; justify-self: end; }
+}
+
 /* --- Alert internals -------------------------------------------------------- */
 .alert__note { margin-top: var(--space-2); font-size: var(--text-xs); color: var(--text-muted); }
 .fresh-stores { margin-top: var(--space-2); }

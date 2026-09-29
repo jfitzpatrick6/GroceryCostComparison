@@ -35,7 +35,12 @@
         <tbody>
             {% for p in per_item %}
             <tr>
-                <td><span class="item-name">{{ p.item.name }}</span></td>
+                <td>
+                    <span class="item-name">{{ p.item.name }}</span>
+                    {% if p.item.pinned_product %}
+                    <span class="badge badge--ok" title="Pinned to the product you chose">pinned</span>
+                    {% endif %}
+                </td>
                 <td class="muted">{{ p.item.qty or "" }}</td>
                 {# The product behind the price (#97). "Item" is the user's own typed
                    text, so before this column the retailer's actual product name

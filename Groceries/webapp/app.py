@@ -540,12 +540,14 @@ def list_pick():
     """
     query = request.args.get("q", "").strip()
     rows = []
+    has_prices = False
     if query:
         like = f"%{query}%"
         conn = get_connection()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                if price_data_available(cur):
+                has_prices = price_data_available(cur)
+                if has_prices:
                     # Same ILIKE as /prices, so a term that finds something there
                     # finds the same things here. Ordered by unit rate then name
                     # because the point is comparing like-for-like prices, and
@@ -560,7 +562,10 @@ def list_pick():
                     rows = cur.fetchall()
         finally:
             conn.close()
-    return render_template("pick.html", query=query, rows=rows)
+    # has_prices distinguishes "your search found nothing" from "there is nothing
+    # to search yet". Without it a fresh install tells the user their search term
+    # was wrong, which sends them rephrasing instead of running a scrape.
+    return render_template("pick.html", query=query, rows=rows, has_prices=has_prices)
 
 
 @app.route("/list/add_pinned", methods=["POST"])
