@@ -222,9 +222,12 @@ utility module for a one-time operation.
 The webapp's tables change in **exactly one place**: `Groceries/webapp/migrations.py`,
 applied **once at container startup** by `init_schema.py`, before gunicorn serves
 anything (#66, building on #82). A `schema_version` table records which numbered
-migrations a database has had; missing ones are applied in order, each in the same
-transaction as its version row, under an advisory lock. No request handler runs
-DDL, and `test_migrations.py` fails the build if one does.
+migrations a database has had; missing ones are applied in order, together with
+their version rows in one transaction (a failure rolls the batch back), under an
+advisory lock. No request handler runs DDL. `test_migrations.py` scans `app.py`'s
+functions for `ensure_*` calls and DDL string literals and fails the build on
+either - a guard, not a proof: DDL built at runtime or in another module would get
+past it, so reviewers still check.
 
 Migration 1 is the baseline: the `ensure_*_table()` functions as they stood at #66.
 They were written to be idempotent against every schema they had met, which is what
@@ -249,6 +252,11 @@ Rules:
   would only reach fresh deploys and the two would silently diverge.
 - **Never call an `ensure_*` function, or execute DDL, from a route, a context
   processor or a helper.** `test_migrations.py` scans `app.py` for both.
+- **`collector.py` owns `grocery_prices`** and gates its DDL on
+  `_price_schema_current()`. A change to `_ensure_price_schema` (new column, index,
+  view) must also be detectable by that check, or existing databases never get it.
+  New columns are detected automatically (view vs table column lists); anything
+  else needs its own check.
 - **A new table still gets listed** in `test_app_schema.py`'s `EXPECTED_TABLES`,
   which asserts every table a route queries is created by the schema or explicitly
   owned by something else.

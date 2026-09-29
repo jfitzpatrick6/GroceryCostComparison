@@ -123,7 +123,25 @@ def _price_schema_current(cur):
           AND column_name IN ('price', 'unit_price', 'unit')
     """)
     columns = dict(cur.fetchall())
-    return columns.get("price") == "numeric" and "unit_price" in columns and "unit" in columns
+    if not (columns.get("price") == "numeric" and "unit_price" in columns and "unit" in columns):
+        return False
+    # The view is `SELECT *`, which Postgres expands to a fixed column list when
+    # the view is CREATED - a column added to the table later is not in it until
+    # the view is rebuilt. The old unconditional DDL rebuilt it every scrape; this
+    # gate would not. So compare the two column lists, which also means a future
+    # ADD COLUMN in _ensure_price_schema reaches existing databases without anyone
+    # having to remember to extend this check (review of #66).
+    cur.execute("""
+        SELECT table_name, array_agg(column_name::text ORDER BY column_name)
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name IN ('grocery_prices', 'grocery_prices_latest')
+        GROUP BY table_name
+    """)
+    lists = dict(cur.fetchall())
+    # Anything else _ensure_price_schema changes (a new index, a different view
+    # definition) must add its own check here - it will not be applied otherwise.
+    return lists.get("grocery_prices") == lists.get("grocery_prices_latest")
 
 
 def _ensure_price_schema(cur):
@@ -141,11 +159,10 @@ def _ensure_price_schema(cur):
             datetime TIMESTAMP
         );
     """)
-    # Idempotent - safe to run every time rather than needing a
-    # one-off migration step. ADD COLUMN IF NOT EXISTS is a
-    # no-op if these already exist; ALTER COLUMN TYPE...USING
-    # is a harmless numeric->numeric cast if price is already
-    # NUMERIC (only matters for a table created before this).
+    # Idempotent, and since #66 only run when _price_schema_current() says
+    # something is missing. ADD COLUMN IF NOT EXISTS is a no-op if these
+    # already exist; ALTER COLUMN TYPE...USING is a harmless numeric->numeric
+    # cast if price is already NUMERIC (only matters for an old table).
     cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit_price NUMERIC;")
     cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit TEXT;")
     # Postgres refuses ALTER COLUMN TYPE on a column any view
@@ -184,10 +201,10 @@ def _ensure_price_schema(cur):
     # EXISTS and an ALTER COLUMN TYPE, and those take
     # AccessExclusiveLock even when they change nothing (measured on
     # postgres:16, and recorded in CONTRIBUTING §8), so a concurrent
-    # webapp read CAN block here for the duration. Pre-existing
-    # behaviour, not introduced by the index; #66 removes the whole
-    # category by moving DDL out of the request path and into
-    # startup. Build cost measured: 190 ms at 46k rows, 9.3 s at 4.2M.
+    # webapp read CAN block here for the duration. Since #66 that duration
+    # is only this schema step - it commits on its own before the inserts,
+    # and routine scrapes skip it entirely. Build cost measured: 190 ms at
+    # 46k rows, 9.3 s at 4.2M.
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_grocery_prices_product_store_datetime
         ON grocery_prices (product, store, datetime DESC);
