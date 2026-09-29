@@ -110,6 +110,26 @@ def _harvest_shop_and_zone(page, host):
     return found
 
 
+def _collect_leaf_paths(nodes, path=()):
+    """Department tree -> [(leaf slug, "Dept > Leaf" path)] (#114).
+
+    Same leaves as _collect_leaf_slugs, plus the human path to each, so every
+    item can record which department it was listed under. On Tops that is a
+    real taxonomy (Meat & Seafood > Poultry, Deli & Bakery > Prepared Meals,
+    Pet > Dog Treats & Bones); on Aldi the tree is brands and diets ("ALDI
+    Exclusive Brands > Kirkwood"), which is not a category - see scrape_store.
+    """
+    leaves = []
+    for node in nodes:
+        here = (*path, (node.get("name") or "").strip())
+        children = node.get("childCollections") or []
+        if children:
+            leaves.extend(_collect_leaf_paths(children, here))
+        else:
+            leaves.append((node["slug"], " > ".join(p for p in here if p)))
+    return leaves
+
+
 def _collect_leaf_slugs(nodes):
     """Department tree -> flat list of leaf collection slugs. Only leaves
     are queried (not parent departments) since a parent's item count is
@@ -126,13 +146,26 @@ def _collect_leaf_slugs(nodes):
 
 
 def get_department_slugs(context, host, shop_id, postal_code):
+    return [slug for slug, _ in get_department_paths(context, host, shop_id, postal_code)]
+
+
+def get_department_paths(context, host, shop_id, postal_code):
     data = _graphql_get(
         context,
         host,
         "CollectionsHeaderDepartments",
         {"includeSlugs": ["dynamic_collection-sales"], "shopId": shop_id, "postalCode": postal_code},
     )
-    return _collect_leaf_slugs(data.get("deptCollections") or [])
+    # Real departments first, promotions last, so a cross-listed item keeps its
+    # department rather than the promo it also appears in (dedupe keeps the
+    # first listing - see scrape_store). Observed on Tops 2026-09-29: the tree
+    # OPENS with a one-leaf seasonal collection ("Everything Peach", slug
+    # "rc-08-22-26everythingpeach"), while every real department's top-level
+    # slug starts "n-" ("n-meat-seafood-7"). Sorting is stable, so department
+    # order is otherwise unchanged.
+    tops = data.get("deptCollections") or []
+    ordered = sorted(tops, key=lambda node: not (node.get("slug") or "").startswith("n-"))
+    return _collect_leaf_paths(ordered)
 
 
 def get_collection_item_ids(context, host, shop_id, zone_id, postal_code, slug):
@@ -206,10 +239,10 @@ def _parse_item(item, calculate_rate_per_unit):
         size = item.get("size") or "N/A"
 
     rate = calculate_rate_per_unit(price, size) if size != "N/A" else "N/A"
-    return {"Product": [name], "Price": [price], "Rate": [rate], "Size": [size]}
+    return {"Product": [name], "Price": [price], "Rate": [rate], "Size": [size], "Category": [None]}
 
 
-def scrape_store(retailer_slug, host, calculate_rate_per_unit):
+def scrape_store(retailer_slug, host, calculate_rate_per_unit, categories=True):
     """Scrapes one Instacart white-label storefront (Tops or Aldi) for
     whatever store the machine's network location resolves to. Returns a
     DataFrame with Product/Price/Rate/Size columns, matching the other
@@ -230,8 +263,11 @@ def scrape_store(retailer_slug, host, calculate_rate_per_unit):
             zone_id = shop["zone_id"]
             postal_code = shop["postal_code"]
 
-            slugs = get_department_slugs(context, host, shop_id, postal_code)
-            for slug in slugs:
+            # categories=False for a storefront whose tree is not a taxonomy
+            # (Aldi: brands and diets). Recording "Kirkwood" as a category would
+            # be a wrong answer dressed as data; None says "unknown" (#114).
+            leaves = get_department_paths(context, host, shop_id, postal_code)
+            for slug, path in leaves:
                 try:
                     item_ids = get_collection_item_ids(context, host, shop_id, zone_id, postal_code, slug)
                 except Exception as e:
@@ -248,6 +284,8 @@ def scrape_store(retailer_slug, host, calculate_rate_per_unit):
                         try:
                             parsed = _parse_item(item, calculate_rate_per_unit)
                             if parsed:
+                                if categories:
+                                    parsed["Category"] = [path]
                                 rows.append(pd.DataFrame.from_dict(parsed))
                         except Exception as e:
                             print(f"[{retailer_slug}] item parse error: {e}")
@@ -256,7 +294,14 @@ def scrape_store(retailer_slug, host, calculate_rate_per_unit):
             browser.close()
 
     if not rows:
-        return pd.DataFrame(columns=["Product", "Price", "Rate", "Size"])
+        return pd.DataFrame(columns=["Product", "Price", "Rate", "Size", "Category"])
     # Leaf collections are usually disjoint, but a "sales" collection can
     # cross-list an item that's also in its normal category - dedupe those.
-    return pd.concat(rows, ignore_index=True).drop_duplicates(ignore_index=True)
+    # Deduped on the priced fields only, NOT Category: a cross-listed item now
+    # differs by category per listing, and keeping every copy would duplicate
+    # ~1,700 Tops products (#96 measured the cross-listing). The first listing
+    # wins, which is the department walk order - a real department before the
+    # dynamic "sales" collection.
+    return pd.concat(rows, ignore_index=True).drop_duplicates(
+        subset=["Product", "Price", "Rate", "Size"], ignore_index=True
+    )

@@ -91,7 +91,29 @@ def parse_size(product_name):
     match = _SIZE_RE.search(name)
     return match.group(1) if match else 'N/A'
 
-ROW_COLUMNS = ["Product", "Price", "Rate", "Size"]
+ROW_COLUMNS = ["Product", "Price", "Rate", "Size", "Category"]
+
+# group_ids under "grocery>" that are NOT departments - brand pages and
+# cross-cutting collections a product also appears in. Observed live on
+# 2026-09-29 (#114): a case of water carries 25 group ids, most of them
+# seasonal ("seasonal>summer>heat-wave-prep"), plus grocery>wellsley-farms>...
+# and grocery>beverages>water - only the last is its department.
+_BJS_NON_DEPARTMENTS = {"wellsley-farms", "kids-grocery", "specialty-shops", "protein-and-nutrition"}
+
+
+def bjs_category(group_ids):
+    """Most specific real grocery department for a BJs product, as
+    "Meat > Chicken", or None (#114). Deepest wins; ties keep API order."""
+    best = None
+    for gid in group_ids or []:
+        parts = str(gid).split(">")
+        if len(parts) < 2 or parts[0] != "grocery" or parts[1] in _BJS_NON_DEPARTMENTS:
+            continue
+        if best is None or len(parts) > len(best):
+            best = parts
+    if not best:
+        return None
+    return " > ".join(p.replace("-", " ").replace(" and ", " & ").title() for p in best[1:])
 
 # A product this club does not price. Reason it gets its own label rather than
 # falling into the generic error bucket: it is a *catalogue* fact (BJs lists it
@@ -227,6 +249,7 @@ def parse_product(product, store):
             "Price": product_price,
             "Rate": calculate_rate_per_unit(product_price, product_size),
             "Size": product_size,
+            "Category": bjs_category(product.get('data', {}).get('group_ids')),
         }
         return row, None
     except Exception as e:

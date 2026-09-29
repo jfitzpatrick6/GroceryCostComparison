@@ -120,10 +120,11 @@ def _price_schema_current(cur):
     cur.execute("""
         SELECT column_name, data_type FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'grocery_prices'
-          AND column_name IN ('price', 'unit_price', 'unit')
+          AND column_name IN ('price', 'unit_price', 'unit', 'category')
     """)
     columns = dict(cur.fetchall())
-    if not (columns.get("price") == "numeric" and "unit_price" in columns and "unit" in columns):
+    if not (columns.get("price") == "numeric" and "unit_price" in columns and "unit" in columns
+            and "category" in columns):
         return False
     # The view is `SELECT *`, which Postgres expands to a fixed column list when
     # the view is CREATED - a column added to the table later is not in it until
@@ -165,6 +166,11 @@ def _ensure_price_schema(cur):
     # cast if price is already NUMERIC (only matters for an old table).
     cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit_price NUMERIC;")
     cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit TEXT;")
+    # The store's own department for the product (#114): Tops' leaf path, BJs'
+    # grocery group; NULL where the store exposes none (Aldi) or the scraper
+    # predates it. _price_schema_current() requires it, so existing databases
+    # get it on their next scrape.
+    cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS category TEXT;")
     # Postgres refuses ALTER COLUMN TYPE on a column any view
     # depends on, even for a no-op cast (see #53) - drop the
     # view first since it gets unconditionally recreated right
@@ -211,6 +217,13 @@ def _ensure_price_schema(cur):
     """)
 
 
+def _category(row):
+    """The row's Category, or None - Walmart's scraper has no such column, and
+    pandas turns a missing value into NaN, which must not be stored as 'nan'."""
+    value = row.get('Category')
+    return value if isinstance(value, str) and value else None
+
+
 def store_data(df):
     """Stores the scraped data in a PostgreSQL database. Raises on failure rather
     than swallowing it, so a broken run is visible instead of silently a no-op."""
@@ -233,12 +246,12 @@ def store_data(df):
                     unit_price, unit = _numeric_rate(row['Price'], row['Size'])
                     cur.execute("""
                         INSERT INTO grocery_prices
-                            (product, price, rate, size, store, store_id, datetime, unit_price, unit)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            (product, price, rate, size, store, store_id, datetime, unit_price, unit, category)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         row['Product'], row['Price'], row['Rate'], row['Size'],
                         row['store'], row['store_id'], row['Datetime'],
-                        unit_price, unit,
+                        unit_price, unit, _category(row),
                     ))
         print(f"Inserted {len(df)} rows into grocery_prices.")
 

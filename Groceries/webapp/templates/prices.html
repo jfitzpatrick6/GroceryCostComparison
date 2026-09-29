@@ -39,6 +39,9 @@
         {% for row in col.rows %}
         <div class="store-col__item">
             <div class="item-name">{{ row.product }}</div>
+            {# The store's own department (#114), so "Deli" vs "Poultry" is visible
+               at a glance. Absent for Aldi, whose storefront exposes none. #}
+            {% if row.category %}<div class="faint small">{{ row.category }}</div>{% endif %}
             <div class="row row--tight">
                 <span class="price">${{ "%.2f"|format(row.price) if row.price is not none else "?" }}</span>
                 {% if row.size %}<span class="muted small">{{ row.size }}</span>{% endif %}

@@ -579,7 +579,11 @@ def load_catalog(cur):
     second time on every page load; one extra date per row is far cheaper than
     that. It does not affect matching, so tests that build catalog fixtures by
     hand are unaffected by not including it."""
-    cur.execute("SELECT product, store, price, size, unit_price, unit, datetime FROM grocery_prices_latest")
+    # category (#114) is shown on /prices; `SELECT *` would also work but an
+    # explicit list keeps this read's width deliberate.
+    cur.execute(
+        "SELECT product, store, price, size, unit_price, unit, datetime, category FROM grocery_prices_latest"
+    )
     rows = cur.fetchall()
     catalog = []
     for row in rows:
