@@ -105,11 +105,19 @@ def check_csrf():
 # 100. If the pool is ever exhausted anyway, the caller gets a plain direct
 # connection rather than an error - slower, never broken.
 #
+# POOL_MIN is what actually gets REUSED, not a floor: psycopg2's pool keeps a
+# returned connection only while fewer than `minconn` are idle, and closes the
+# rest. At minconn=1 every page render still opened a fresh connection (the
+# route held the one idle connection, so the nav's borrow connected anew) - the
+# review of #67 caught this; measured below in the commit. 4 idle per worker
+# covers two concurrent page renders without reconnecting; they're opened
+# eagerly when the pool is created.
+#
 # The subtle part (#67): a pooled connection is not closed between uses, so an
 # uncommitted transaction would otherwise leak into the next borrower. close()
 # therefore ROLLS BACK before returning the connection - a route that forgot to
 # commit loses its writes exactly as it did when close() really closed.
-POOL_MIN, POOL_MAX = 1, 8
+POOL_MIN, POOL_MAX = 4, 8
 _pool = None
 _pool_lock = threading.Lock()
 
@@ -170,21 +178,24 @@ def get_connection(connect_timeout=None):
             connect_timeout=connect_timeout,
         )
     pool = _get_pool()
-    try:
-        conn = pool.getconn()
-    except psycopg2.pool.PoolError:
-        return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
     # A connection the server dropped (db container restarted) still looks open
-    # client-side until it is used. Probe once so a restart costs one reconnect
-    # here instead of one 503 per pooled connection.
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-        conn.rollback()
-    except psycopg2.Error:
-        pool.putconn(conn, close=True)
-        conn = pool.getconn()
-    return _PooledConnection(pool, conn)
+    # client-side until it is used. Probe each checkout, discarding dead ones, so a
+    # restart costs a reconnect here instead of a 503 per idle pooled connection.
+    # Bounded: after POOL_MAX + 1 tries, or if the pool runs dry, fall back to a
+    # direct connection rather than failing the request.
+    for _ in range(POOL_MAX + 1):
+        try:
+            conn = pool.getconn()
+        except psycopg2.pool.PoolError:
+            break
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            conn.rollback()
+            return _PooledConnection(pool, conn)
+        except psycopg2.Error:
+            pool.putconn(conn, close=True)
+    return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
 
 
 def price_data_available(cur):

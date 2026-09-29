@@ -7,10 +7,12 @@ it is returned, or it leaks into the next request. The real-Postgres check
 the #67 commit.
 """
 
+import types
 import unittest
 from unittest import mock
 
 import psycopg2
+import psycopg2.extensions
 import psycopg2.pool
 
 import app
@@ -97,6 +99,36 @@ class PooledConnectionTests(unittest.TestCase):
             conn = app.get_connection()
         self.assertIs(conn._conn, fresh)
         self.assertEqual(pool.returned, [(dead, True)])
+
+    def test_every_idle_connection_dead_falls_back_to_direct(self):
+        direct = object()
+        pool = _Pool([_Conn(dead=True) for _ in range(app.POOL_MAX + 1)])
+        with self._with_pool(pool), mock.patch.object(psycopg2, "connect", return_value=direct):
+            self.assertIs(app.get_connection(), direct)
+        self.assertTrue(all(close for _, close in pool.returned))
+
+    def test_real_pool_reuses_up_to_pool_min_connections(self):
+        # Review of #67: psycopg2 keeps a returned connection only while fewer
+        # than minconn are idle. Use the REAL pool class with connect mocked, so
+        # this fails if POOL_MIN drops back to a value that forces reconnects.
+        made = []
+
+        def fake_connect(*a, **kw):
+            c = _Conn()
+            c.autocommit = False
+            c.info = types.SimpleNamespace(transaction_status=psycopg2.extensions.TRANSACTION_STATUS_IDLE)
+            made.append(c)
+            return c
+
+        with mock.patch("psycopg2.pool.psycopg2.connect", fake_connect):
+            pool = psycopg2.pool.ThreadedConnectionPool(app.POOL_MIN, app.POOL_MAX)
+            opened_at_start = len(made)
+            for _ in range(20):  # a page render: route + nav, held at once
+                a, b = pool.getconn(), pool.getconn()
+                pool.putconn(b)
+                pool.putconn(a)
+        self.assertEqual(len(made), opened_at_start)
+        self.assertGreaterEqual(app.POOL_MIN, 2)
 
     def test_exhausted_pool_falls_back_to_a_direct_connection(self):
         direct = object()
