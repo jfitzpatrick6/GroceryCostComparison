@@ -19,6 +19,8 @@ this module in CI. Same reasoning retention.py's module docstring gives for
 existing separately from collector.py.
 """
 
+import json
+import os
 import re
 
 import requests
@@ -342,11 +344,75 @@ def report(store_label, stats):
         )
 
 
-def _browse_url(store, page):
-    return f"https://ac.cnstrc.com/browse/group_id/grocery?c=ciojs-client-2.53.1&key=key_2i36vP8QTs3Ati4x&i=0a5f818b-0856-433f-a88f-6f097c36f09d&s=2&page={page}&num_results_per_page=40&&fmt_options%5Bhidden_fields%5D=prices.{store}&fmt_options%5Bhidden_fields%5D=sale_prices.{store}&fmt_options%5Bhidden_fields%5D=original_price.{store}&fmt_options%5Bhidden_fields%5D=eligibility.{store}&fmt_options%5Bhidden_fields%5D=inventory.{store}&fmt_options%5Bhidden_fields%5D=prices.online&fmt_options%5Bhidden_fields%5D=sale_prices.online&fmt_options%5Bhidden_fields%5D=original_price.online&fmt_options%5Bhidden_fields%5D=eligibility.online&fmt_options%5Bhidden_fields%5D=inventory.online&pre_filter_expression=%7B%22or%22%3A%5B%7B%22name%22%3A%22avail_stores%22%2C%22value%22%3A%22online%22%7D%2C%7B%22name%22%3A%22avail_stores%22%2C%22value%22%3A%22{store}%22%7D%2C%7B%22and%22%3A%5B%7B%22name%22%3A%22avail_stores%22%2C%22value%22%3A%22{store}%22%7D%2C%7B%22name%22%3A%22avail_sdd%22%2C%22value%22%3A%22{store}%22%7D%5D%7D%2C%7B%22name%22%3A%22out_of_stock%22%2C%22value%22%3A%22Y%22%7D%5D%7D&_dt=1738009529475"
+_BROWSE_URL = "https://ac.cnstrc.com/browse/group_id/grocery"
+
+# Per-store fields the browse API only returns when asked for by name. Without
+# `prices.<club>` there is no club price at all, so every product would be a
+# no_store_price skip (#96); the `online` set is what makes that skip
+# explainable in the log.
+_HIDDEN_FIELD_KINDS = ("prices", "sale_prices", "original_price", "eligibility", "inventory")
 
 
-def _fetch_page(store, page):
+def _browse_params(store, page, key):
+    """The browse request as a readable parameter list (#72).
+
+    Was one hand-percent-encoded 1,129-character f-string with the API key
+    inline. Rebuilt field by field and checked live against that string:
+    identical total_num_results and identical product ids on every page (see
+    the #72 commit). A list of pairs rather than a dict because
+    `fmt_options[hidden_fields]` repeats.
+
+    `c` identifies the Constructor.io JS client version BJs' site uses and is
+    kept as captured. The old URL also carried a browser session id `i`, a
+    session count `s` and a `_dt` cache-buster, all frozen at capture time
+    (2025-01-28). Dropping `i`/`s` is a FIX, not just cleanup - measured live
+    2026-09-29 over full walks of 3,103 products: with the frozen session the
+    API reorders results between page requests, so each walk returned 78-92
+    duplicate products and silently missed as many (3,011 and 3,025 distinct in
+    two walks; 3,021 with only `i`/`s` added back). Without them: 3,103 distinct
+    in both walks. `_dt` alone made no difference and was dropped as dead.
+    """
+    params = [
+        ("c", "ciojs-client-2.53.1"),
+        ("key", key),
+        ("page", page),
+        ("num_results_per_page", 40),
+    ]
+    for owner in (store, "online"):
+        for kind in _HIDDEN_FIELD_KINDS:
+            params.append(("fmt_options[hidden_fields]", f"{kind}.{owner}"))
+    # Which products to list: sold online, or stocked at this club (optionally
+    # same-day-delivery eligible), or out of stock. Kept exactly as captured;
+    # #96 notes it asks for online-only products the parse then skips, and that
+    # tightening it is a separate decision.
+    params.append(("pre_filter_expression", json.dumps({"or": [
+        {"name": "avail_stores", "value": "online"},
+        {"name": "avail_stores", "value": store},
+        {"and": [
+            {"name": "avail_stores", "value": store},
+            {"name": "avail_sdd", "value": store},
+        ]},
+        {"name": "out_of_stock", "value": "Y"},
+    ]}, separators=(",", ":"))))
+    return params
+
+
+def browse_key():
+    """The Constructor.io key BJs' site uses, from BJS_CNSTRC_KEY (#72).
+
+    A public client-side key - BJs ships it in browser JavaScript - but still
+    configuration, not source (CONTRIBUTING §9): it can change without notice,
+    and then fixing the scraper must be an .env edit, not a commit. Raises at
+    the start of the BJs scrape rather than letting every page 401, so the run
+    summary says exactly what is wrong.
+    """
+    key = os.getenv("BJS_CNSTRC_KEY")
+    if not key:
+        raise RuntimeError("BJS_CNSTRC_KEY is not set - see README's .env section")
+    return key
+
+
+def _fetch_page(store, page, key):
     """One browse page as parsed JSON, or None if it could not be read.
 
     Returning None rather than raising is what lets collect_products() report a
@@ -358,7 +424,7 @@ def _fetch_page(store, page):
         # A timeout, because without one a stalled connection never returns and
         # the None-means-truncated contract above never gets a chance to apply:
         # the whole scheduled run hangs instead of reporting a short walk.
-        response = requests.get(_browse_url(store, page), timeout=60)
+        response = requests.get(_BROWSE_URL, params=_browse_params(store, page, key), timeout=60)
         if response.status_code != 200:
             print(f"[BJs] page {page}: HTTP {response.status_code}")
             return None
@@ -368,13 +434,13 @@ def _fetch_page(store, page):
         return None
 
 
-def _page_bodies(store):
+def _page_bodies(store, key):
     """Lazily fetch browse pages in order. Lazy so that collect_products()
     breaking on the API's empty-page terminator doesn't leave a request in
     flight for a page nobody will read."""
     page = 1
     while True:
-        body = _fetch_page(store, page)
+        body = _fetch_page(store, page, key)
         yield body
         if body is None:
             return
@@ -384,7 +450,7 @@ def _page_bodies(store):
 
 
 def main(store):
-    rows, stats = collect_products(_page_bodies(store), store)
+    rows, stats = collect_products(_page_bodies(store, browse_key()), store)
     report("BJs", stats)
 
     # Imported here rather than at module level: the required test tier does not
