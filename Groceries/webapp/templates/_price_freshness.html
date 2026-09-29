@@ -30,7 +30,12 @@
 </div>
 {% else %}
 <div class="alert alert--{{ 'warning' if freshness.any_stale else 'ok' }}" role="status">
-    <span class="alert__icon" aria-hidden="true">{{ '&#9888;' if freshness.any_stale else '&#10003;' }}</span>
+    {# The glyph must be literal template text, not a value inside {{ }}. Jinja
+       autoescapes expression output, so `{{ '&#10003;' }}` renders the entity
+       itself and the page shows "&#10003;" as text instead of a tick. Found by
+       screenshotting the rendered page - a grep for style= and a computed-contrast
+       check both pass happily on a page carrying this bug. #}
+    <span class="alert__icon" aria-hidden="true">{% if freshness.any_stale %}&#9888;{% else %}&#10003;{% endif %}</span>
     <div class="alert__body">
         {% if freshness.any_stale %}
         <div class="alert__title">These prices are out of date</div>

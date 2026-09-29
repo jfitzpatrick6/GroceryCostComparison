@@ -716,6 +716,67 @@ details.card[open] > summary { margin-bottom: var(--space-3); }
        scrolled sideways, but the table keeps its own scroll as a fallback so
        nothing is ever unreachable. */
     .totals__item { flex-basis: 100%; }
+
+    /* The grocery list is the page used at the store, one-handed (#49). Six
+       columns at 390px push the match - the price and the "not sure" warning,
+       i.e. the only information that matters while deciding - off-screen behind
+       a horizontal scroll. So on narrow screens each row becomes a card and
+       every field is visible without scrolling sideways. Labels come from
+       data-label attributes, which desktop ignores entirely. */
+    .table--cards { overflow: visible; }
+    .table--cards table,
+    .table--cards tbody,
+    .table--cards td { display: block; width: 100%; }
+    .table--cards thead { display: none; }
+    .table--cards tbody tr {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: var(--shadow-sm);
+        padding: var(--space-3);
+        margin: 0 0 var(--space-3);
+    }
+    .table--cards tbody tr:last-child { margin-bottom: 0; }
+    .table--cards tbody tr:hover { background: var(--surface); }
+    .table--cards td { border: 0; padding: var(--space-1) 0; text-align: left; }
+    .table--cards td::before {
+        content: attr(data-label);
+        display: block;
+        font-size: var(--text-xs);
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-faint);
+    }
+    /* Cells with no label are action rows; no empty caption above them. */
+    .table--cards td[data-label=""]::before { content: none; }
+    .table--cards td[data-label=""] { padding-top: var(--space-2); }
+    /* The item name is the card's title: no caption, larger type. Qty is folded
+       into it at this width (its own cell is hidden) so the card doesn't say the
+       same thing twice. */
+    .table--cards td.card-title-cell::before { content: none; }
+    .table--cards td.card-title-cell { padding-bottom: var(--space-2); }
+    .table--cards td.card-title-cell .item-name { font-size: var(--text-lg); }
+    .table--cards td[data-label="Qty"] { display: none; }
+    /* Order matters more than labels here. The DOM order is check-button first
+       (it is the first column on desktop), which on a card put the action above
+       the thing it acts on. The card should read: what it is, what it matched and
+       costs, then what you can do about it. */
+    .table--cards td.card-title-cell { order: 1; }
+    .table--cards td[data-label="Cheapest match"] { order: 2; }
+    .table--cards td.td--check { order: 3; padding-top: var(--space-2); }
+    .table--cards td.td--remove { order: 4; padding-top: 0; }
+    /* Provenance is useful at home ("did Sam already add eggs?") and noise at
+       the store, so on a card it drops to a single quiet line with no caption. */
+    .table--cards td[data-label="Added / checked by"] { order: 5; }
+    .table--cards td[data-label="Added / checked by"]::before { content: none; }
+    .table--cards td[data-label="Added / checked by"] { font-size: var(--text-xs); }
+    /* A card whose provenance is just "?" renders a bare floating question mark
+       under the actions - pure noise on the page you read in a store. The column
+       stays on desktop, where an empty cell in a table reads as empty. */
+    .table--cards td.is-empty { display: none; }
 }
 
 @media (max-width: 420px) {

@@ -50,7 +50,7 @@
     </form>
 </div>
 
-<div class="table-wrap">
+<div class="table-wrap table--cards">
     <table>
         <thead>
             <tr>
@@ -65,7 +65,13 @@
         <tbody>
             {% for item in items %}
             <tr{% if item.checked %} class="is-checked"{% endif %}>
-                <td>
+                {# data-label is what the mobile card layout prints above each
+                   value. On a phone at the store this page is the whole point of
+                   the app, and six columns at 390px put the match - the price and
+                   the warning - off-screen behind a horizontal scroll. Stacking
+                   each row into a card keeps every field visible without
+                   scrolling sideways. Desktop ignores the attributes entirely. #}
+                <td data-label="" class="td--check">
                     <form method="post" action="/list/check">
                         <input type="hidden" name="id" value="{{ item.id }}">
                         <input type="hidden" name="checked" value="{{ 0 if item.checked else 1 }}">
@@ -74,9 +80,9 @@
                         </button>
                     </form>
                 </td>
-                <td><span class="item-name">{{ item.name }}</span></td>
-                <td class="muted">{{ item.qty or "" }}</td>
-                <td>
+                <td data-label="Item" class="card-title-cell"><span class="item-name">{{ item.name }}</span>{% if item.qty %} <span class="muted">&middot; {{ item.qty }}</span>{% endif %}</td>
+                <td data-label="Qty" class="muted">{{ item.qty or "" }}</td>
+                <td data-label="Cheapest match">
                     {% if item.match %}
                         {# Name the product that actually matched, not just a price
                            (#97). Without this, "bacon" priced from "TOPS Bacon Chips"
@@ -97,10 +103,10 @@
                         <span class="badge badge--muted">no match</span>
                     {% endif %}
                 </td>
-                <td class="faint small">
+                <td data-label="Added / checked by" class="faint small{% if not item.added_by and not item.checked_by %} is-empty{% endif %}">
                     {{ item.added_by or "?" }}{% if item.checked %} / {{ item.checked_by or "?" }}{% endif %}
                 </td>
-                <td class="num">
+                <td data-label="" class="num td--remove">
                     <form method="post" action="/list/remove"
                           onsubmit="return confirm('Remove {{ item.name }} from the list?');">
                         <input type="hidden" name="id" value="{{ item.id }}">
