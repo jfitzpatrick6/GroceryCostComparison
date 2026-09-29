@@ -2568,6 +2568,14 @@ _USDA_SEARCH_ALIASES = {
     # (158 g/cup - flour, not grain).
     "whole milk": "milk whole 3.25% milkfat",
     "brown rice": "rice brown long grain raw",
+    # #126: "milk chocolate" resolved to "Milk dessert, frozen" (137 g/cup) -
+    # FDC itself ranks "Candies, milk chocolate" first, but #54's starts-with
+    # preference promoted the entry that begins with "milk". Its only cup
+    # portion is "cup chips" (168 g), which is how recipes measure it. The same
+    # live search showed "chocolate milk" (the drink) resolving to the candy;
+    # it gets the fluid chocolate-milk entry.
+    "milk chocolate": "candies milk chocolate",
+    "chocolate milk": "milk chocolate fluid commercial reduced fat",
 }
 
 
