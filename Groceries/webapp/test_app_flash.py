@@ -14,6 +14,7 @@ from unittest import mock
 import psycopg2
 
 import app
+from test_csrf import post_with_token
 
 
 def _no_db():
@@ -41,14 +42,14 @@ class PlannerEmptyInputTests(unittest.TestCase):
 
     def test_blank_extra_line_is_an_error_not_a_500(self):
         with mock.patch.object(app, "get_connection", _no_db):
-            resp = self.client.post("/planner/add_extra", data={
+            resp = post_with_token(self.client, "/planner/add_extra", {
                 "week_start": "2026-09-28", "day_of_week": "2", "line": "  "})
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(self._flashes(), [("error", "Enter an ingredient line to add it.")])
 
     def test_placeholder_pick_does_not_claim_it_planned(self):
         with mock.patch.object(app, "get_connection", _no_db):
-            resp = self.client.post("/planner/set", data={
+            resp = post_with_token(self.client, "/planner/set", {
                 "week_start": "2026-09-28", "day_of_week": "2", "recipe_id": ""})
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(self._flashes(), [("error", "Pick a recipe to plan it.")])
@@ -82,7 +83,7 @@ class ErrorHandlerTests(unittest.TestCase):
         with mock.patch.object(app, "get_connection", _NoProfilesConn), \
                 mock.patch.object(app, "parse_pasted_recipe", side_effect=ValueError("boom")), \
                 self.assertLogs(app.app.logger, "ERROR"):
-            resp = self.client.post("/recipes/parse_paste", data={"pasted": "x"})
+            resp = post_with_token(self.client, "/recipes/parse_paste", {"pasted": "x"})
         self.assertEqual(resp.status_code, 500)
         self.assertIn(b"Something went wrong on our side", resp.data)
 

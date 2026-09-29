@@ -43,7 +43,7 @@ Create `.env` at the repo root. Required contents (names verified against
 | `WALMARTSTORE` | **yes** (listed) | Also in `REQUIRED_STORE_ENV`, so it is checked even though Walmart scraping does not work (#12). Set it or the run aborts before scraping anything. |
 | `TOPS_STORE`, `ALDIS_STORE` | no | Read and passed to the scrapers, but **deliberately not required** — `tops.py`/`aldis.py` don't use them yet, because Instacart's white-label platform no longer supports safe store targeting via a simple store id (#43). Setting them changes nothing today. |
 | `USDA_API_KEY` | recommended | Free key from <https://fdc.nal.usda.gov/api-key-signup>. Without it the planner's purchase-unit estimates silently return nothing rather than erroring. |
-| `SECRET_KEY` | recommended | Defaults to a hardcoded dev constant, which is safe for *correctness* across gunicorn workers but not for security — session cookies and (once #69 lands) CSRF tokens derive from it. Generate with `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. |
+| `SECRET_KEY` | recommended | Signs session cookies and CSRF tokens (#69). If unset, `docker-entrypoint.sh` generates a random key per container start and logs that it did - secure, but every restart resets sessions (chosen profile, forms open in a tab). Set it to keep sessions across restarts: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. There is no hardcoded fallback any more. |
 
 **Never commit `.env`, and never paste a store id into an issue, PR or log** —
 they identify which store you shop at.

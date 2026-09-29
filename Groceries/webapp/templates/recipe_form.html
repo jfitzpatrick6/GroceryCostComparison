@@ -14,6 +14,7 @@
         the fields below for you to check over; it does not save anything by itself (#27).
     </p>
     <form method="post" action="/recipes/parse_paste">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="field">
             <label class="label" for="pasted">Recipe text</label>
             <textarea id="pasted" name="pasted" rows="10" placeholder="Paste a recipe here&hellip;"></textarea>
@@ -26,6 +27,7 @@
 {% endif %}
 
 <form method="post" action="{{ form_action }}" class="card stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="field">
         <label class="label" for="r-name">Name</label>
         <input type="text" id="r-name" name="name" value="{{ recipe.name if recipe else '' }}" required autocomplete="off">

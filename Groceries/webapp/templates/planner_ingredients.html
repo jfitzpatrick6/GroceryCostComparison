@@ -51,6 +51,7 @@
 </div>
 
 <form method="post" action="/planner/add_to_list" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="week_start" value="{{ week_start }}">
     <button type="submit" class="btn btn--primary">Add {{ combined|length }} item(s) to grocery list</button>
     <a class="btn" href="/list">View the list</a>

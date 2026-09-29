@@ -14,6 +14,7 @@
     <div class="card">
         <div class="card__title">Add someone</div>
         <form method="post" action="/profiles/add" class="form-row">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="field">
                 <label class="label" for="profile-name">Name</label>
                 <input type="text" id="profile-name" name="name" placeholder="e.g. Jake" required autocomplete="off">
@@ -37,6 +38,7 @@
                     <td class="num">
                         <form method="post" action="/profiles/remove"
                               onsubmit='return confirm({{ ("Remove " ~ row.name ~ "? Items they already added keep their name.")|tojson }});'>
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="id" value="{{ row.id }}">
                             <button type="submit" class="btn btn--sm btn--quiet">Remove</button>
                         </form>
