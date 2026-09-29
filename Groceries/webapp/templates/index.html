@@ -1,5 +1,39 @@
 {% extends "base.html" %}
+{% block title %}Basket - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Grocery Cost Comparison</h1>
-<p>See <a href="/prices">Prices</a> to browse the latest scraped prices.</p>
+<div class="page-head">
+    <h1>What's it going to cost?</h1>
+</div>
+<p class="subtitle">
+    Prices scraped nightly from the stores you actually shop at, compared across your
+    grocery list so you know whether to make one trip or two.
+</p>
+
+<div class="stack">
+    <div class="card">
+        <div class="card__title">Start here</div>
+        <p class="small muted">
+            The usual flow: put the week's meals in the <strong>planner</strong>, push their
+            ingredients to your <strong>grocery list</strong>, then open
+            <strong>where to buy</strong> to see which store is cheapest for the lot.
+        </p>
+        <div class="row">
+            <a class="btn btn--primary" href="/planner">Open the planner</a>
+            <a class="btn" href="/list">Grocery list</a>
+            <a class="btn" href="/list/where-to-buy">Where to buy</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card__title">Everything else</div>
+        <div class="row">
+            <a class="btn" href="/prices">Browse prices</a>
+            <a class="btn" href="/staples">Staples</a>
+            <a class="btn" href="/recipes">Recipes</a>
+            <a class="btn" href="/pantry">Pantry</a>
+            <a class="btn" href="/history">Meal history</a>
+            <a class="btn" href="/profiles">Profiles</a>
+        </div>
+    </div>
+</div>
 {% endblock %}

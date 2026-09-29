@@ -1,27 +1,43 @@
 {% extends "base.html" %}
 {% block title %}Recipes - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Recipes</h1>
-<p><a href="/recipes/new">+ New recipe</a></p>
+<div class="page-head">
+    <h1>Recipes</h1>
+    <a class="btn btn--primary" href="/recipes/new">+ New recipe</a>
+</div>
+<p class="subtitle">
+    What the household cooks. Plan them on the <a href="/planner">planner</a> and their
+    ingredients roll up into the week's shopping.
+</p>
 
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Servings</th>
-            <th>Ingredients</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
-            <td><a href="/recipes/{{ row.id }}">{{ row.name }}</a></td>
-            <td>{{ row.servings or "" }}</td>
-            <td>{{ row.ingredient_count }}</td>
-        </tr>
-        {% else %}
-        <tr><td colspan="3">No recipes yet. <a href="/recipes/new">Add one</a>.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Name</th>
+                <th scope="col" class="num">Servings</th>
+                <th scope="col" class="num">Ingredients</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td><a class="item-name" href="/recipes/{{ row.id }}">{{ row.name }}</a></td>
+                <td class="num">{{ row.servings or "&mdash;" }}</td>
+                <td class="num">{{ row.ingredient_count }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3">
+                <div class="empty">
+                    <div class="empty__glyph" aria-hidden="true">&#127859;</div>
+                    <div class="empty__title">No recipes yet</div>
+                    <p>Add one by hand, or paste a whole recipe and let the app split it into
+                    ingredients for you.</p>
+                    <a class="btn btn--primary" href="/recipes/new">Add your first recipe</a>
+                </div>
+            </td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 {% endblock %}

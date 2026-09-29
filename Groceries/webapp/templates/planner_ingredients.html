@@ -1,34 +1,53 @@
 {% extends "base.html" %}
 {% block title %}Ingredients needed - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Ingredients needed - week of {{ week_start }}</h1>
-<p><a href="/planner?week={{ week_start }}">&laquo; Back to planner</a></p>
-
-<ul>
-    {% for item in combined %}
-    <li>
-        {% if item.amount %}{{ item.amount }} {% endif %}{% if item.unit %}{{ item.unit }} {% endif %}{{ item.name }}
-        {% if item.purchase_amount is not none %}
-            <span style="color:#666">(~{{ item.purchase_amount }} {{ item.purchase_unit }})</span>
-        {% endif %}
-        {% if item.pantry_have is not none %}
-            - have {{ item.pantry_have }} {{ item.unit }} in pantry
-            {% if item.need_amount == "0" %}
-                <strong>(fully covered, won't be added to the list)</strong>
-            {% else %}
-                <strong>(need {{ item.need_amount }} {{ item.unit }} more)</strong>
-            {% endif %}
-        {% endif %}
-    </li>
-    {% else %}
-    <li>No dinners planned this week.</li>
-    {% endfor %}
-</ul>
+<a class="backlink" href="/planner?week={{ week_start }}">&laquo; Back to planner</a>
+<div class="page-head">
+    <h1>Ingredients needed</h1>
+    <span class="badge">week of {{ week_start }}</span>
+</div>
+<p class="subtitle">
+    Everything the week's dinners need, merged and scaled, minus what the pantry already
+    covers. Amounts in brackets are purchase-unit estimates from USDA portion data; a
+    blank one means FDC had no usable cup/tbsp figure for that ingredient, which is
+    deliberate &mdash; no estimate beats a guessed one.
+</p>
 
 {% if combined %}
-<form method="post" action="/planner/add_to_list">
+<div class="card">
+    <ul class="ingredient-list">
+        {% for item in combined %}
+        <li>
+            {% if item.amount %}<span class="qty">{{ item.amount }}</span> {% endif %}{% if item.unit %}<span class="unit">{{ item.unit }}</span> {% endif %}<span class="item-name">{{ item.name }}</span>
+            {% if item.purchase_amount is not none %}
+                <span class="muted small">(~{{ item.purchase_amount }} {{ item.purchase_unit }} to buy)</span>
+            {% endif %}
+            {% if item.pantry_have is not none %}
+                <span class="badge badge--muted">have {{ item.pantry_have }} {{ item.unit }}</span>
+                {% if item.need_amount == "0" %}
+                    <span class="badge badge--ok">fully covered &mdash; won't be added</span>
+                {% else %}
+                    <span class="badge badge--warn">need {{ item.need_amount }} {{ item.unit }} more</span>
+                {% endif %}
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+
+<form method="post" action="/planner/add_to_list" class="row">
     <input type="hidden" name="week_start" value="{{ week_start }}">
-    <button type="submit">Add to grocery list</button>
+    <button type="submit" class="btn btn--primary">Add {{ combined|length }} item(s) to grocery list</button>
+    <a class="btn" href="/list">View the list</a>
 </form>
+{% else %}
+<div class="card">
+    <div class="empty">
+        <div class="empty__glyph" aria-hidden="true">&#128197;</div>
+        <div class="empty__title">No dinners planned this week</div>
+        <p>Add recipes to the <a href="/planner?week={{ week_start }}">planner</a> and their
+        ingredients will be merged, scaled and checked against the pantry here.</p>
+    </div>
+</div>
 {% endif %}
 {% endblock %}

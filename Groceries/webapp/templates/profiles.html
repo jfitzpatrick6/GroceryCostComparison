@@ -1,32 +1,59 @@
 {% extends "base.html" %}
 {% block title %}Profiles - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Household Profiles</h1>
-<p>No passwords - Tailscale is what actually keeps this app private. This is just so edits show whose they were.</p>
+<div class="page-head">
+    <h1>Who's who</h1>
+</div>
+<p class="subtitle">
+    No passwords &mdash; your tailnet is what actually keeps this app private (#35).
+    Profiles only exist so edits can show whose they were: who added an item, who
+    checked it off, who cooked it.
+</p>
 
-<form method="post" action="/profiles/add">
-    <input type="text" name="name" placeholder="Name (e.g. Jake)" required>
-    <button type="submit">Add</button>
-</form>
+<div class="stack">
+    <div class="card">
+        <div class="card__title">Add someone</div>
+        <form method="post" action="/profiles/add" class="form-row">
+            <div class="field">
+                <label class="label" for="profile-name">Name</label>
+                <input type="text" id="profile-name" name="name" placeholder="e.g. Jake" required autocomplete="off">
+            </div>
+            <button type="submit" class="btn btn--primary">Add</button>
+        </form>
+    </div>
 
-<table>
-    <thead>
-        <tr><th>Name</th><th></th></tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
-            <td>{{ row.name }}{% if row.name == active %} (you){% endif %}</td>
-            <td>
-                <form method="post" action="/profiles/remove" style="display:inline">
-                    <input type="hidden" name="id" value="{{ row.id }}">
-                    <button type="submit">Remove</button>
-                </form>
-            </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="2">No profiles yet - add household members above.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th scope="col">Name</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td>
+                        <span class="item-name">{{ row.name }}</span>
+                        {% if row.name == active %}<span class="badge badge--ok">you</span>{% endif %}
+                    </td>
+                    <td class="num">
+                        <form method="post" action="/profiles/remove"
+                              onsubmit="return confirm('Remove {{ row.name }}? Items they already added keep their name.');">
+                            <input type="hidden" name="id" value="{{ row.id }}">
+                            <button type="submit" class="btn btn--sm btn--quiet">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="2">
+                    <div class="empty">
+                        <div class="empty__glyph" aria-hidden="true">&#128101;</div>
+                        <div class="empty__title">No profiles yet</div>
+                        <p>Add each person in the household. Nothing is locked behind them &mdash;
+                        they just label who did what.</p>
+                    </div>
+                </td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
 {% endblock %}
