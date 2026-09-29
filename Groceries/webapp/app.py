@@ -2708,21 +2708,21 @@ def _usda_resolve(query, measure_words, forms, api_key):
         # whole-word identity filter above, so this doesn't reopen the
         # same-word-different-food risk the rest of #54 is fixing.
         for food in foods[:5]:
-            # One slow or failing candidate skips to the next rather than
-            # abandoning the lookup (#123): FDC's Foundation record 746782 for
-            # whole milk took 9.5 s against this 5 s timeout, so "whole milk"
-            # returned None although the next candidate (171265) has a real
-            # cup portion. Since #64 this runs in a background worker, so the
-            # extra attempts cost no page any time.
-            try:
-                detail = requests.get(
-                    f"https://api.nal.usda.gov/fdc/v1/food/{food['fdcId']}",
-                    params={"api_key": api_key},
-                    timeout=5,
-                )
-                detail.raise_for_status()
-            except requests.RequestException:
-                continue
+            # 20 s, not 5 (#123): FDC's Foundation record 746782 for whole milk
+            # took 9.5 s, so a 5 s timeout made "whole milk" return None. This
+            # runs in #64's background worker, so a longer wait costs no page any
+            # time. A failure still ABANDONS the lookup rather than moving to the
+            # next candidate: later candidates are often a different form of the
+            # food ("Rice noodles, cooked" then "..., dry"), and a success is
+            # cached permanently, so skipping would turn a transient network
+            # error into a permanent wrong estimate (review of #123). A failure
+            # is only remembered in memory for an hour, then retried.
+            detail = requests.get(
+                f"https://api.nal.usda.gov/fdc/v1/food/{food['fdcId']}",
+                params={"api_key": api_key},
+                timeout=20,
+            )
+            detail.raise_for_status()
             matching = []
             for portion in detail.json().get("foodPortions") or []:
                 modifier = (portion.get("modifier") or "").lower()

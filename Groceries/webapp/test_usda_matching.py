@@ -270,23 +270,39 @@ class MockedUsdaMatchingTests(unittest.TestCase):
                      "grated parmesan cheese"]:
             self.assertEqual(app._split_form_words(name), (name, set()), name)
 
-    def test_a_slow_candidate_is_skipped_not_fatal(self):
-        # #123: a timeout on one candidate's detail used to abandon the whole
-        # lookup. Real case: FDC 746782 (whole milk, Foundation) took 9.5 s.
+    def test_a_failed_candidate_abandons_the_lookup_not_skips_to_another_form(self):
+        # Review of #123: later candidates are often another FORM of the food
+        # ("Rice noodles, cooked" then "Rice noodles, dry"), and successes are
+        # cached permanently - so a transient failure must yield None (retried
+        # later), never the next candidate's answer.
         import requests
 
-        def slow_first(url, params=None, timeout=None):
+        def first_fails(url, params=None, timeout=None):
             if url.endswith("/foods/search"):
                 return _FakeResponse({"foods": [
-                    {"fdcId": 746782, "description": "Milk, whole, 3.25% milkfat, with added vitamin D"},
-                    {"fdcId": 171265, "description": "Milk, whole, 3.25% milkfat, with added vitamin D"},
+                    {"fdcId": 1, "description": "Rice noodles, cooked"},
+                    {"fdcId": 2, "description": "Rice noodles, dry"},
                 ]})
-            if url.endswith("/746782"):
+            if url.endswith("/1"):
                 raise requests.Timeout("read timed out")
-            return _FakeResponse({"foodPortions": [_portion(1.0, "cup", 244.0)]})
+            return _FakeResponse({"foodPortions": [_portion(1.0, "cup", 91.0)]})
 
-        with mock.patch.object(app.requests, "get", slow_first):
-            self.assertEqual(app._usda_grams_per_unit("whole milk", ["cup"]), 244.0)
+        with mock.patch.object(app.requests, "get", first_fails):
+            self.assertIsNone(app._usda_grams_per_unit("rice noodles", ["cup"]))
+
+    def test_detail_timeout_allows_slow_fdc_records(self):
+        # FDC 746782 (whole milk) took 9.5 s live; the detail call must wait longer.
+        seen = []
+
+        def record(url, params=None, timeout=None):
+            if "/food/" in url:
+                seen.append(timeout)
+                return _FakeResponse({"foodPortions": [_portion(1.0, "cup", 244.0)]})
+            return _FakeResponse({"foods": [{"fdcId": 171265, "description": "Milk, whole, 3.25% milkfat"}]})
+
+        with mock.patch.object(app.requests, "get", record):
+            app._usda_grams_per_unit("whole milk", ["cup"])
+        self.assertGreaterEqual(seen[0], 15)
 
     def test_butter_resolves_to_plain_butter_not_ghee(self):
         # The #54 headline bug: bare "butter" used to top-match "Butter,
