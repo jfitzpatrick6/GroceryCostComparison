@@ -270,6 +270,24 @@ class MockedUsdaMatchingTests(unittest.TestCase):
                      "grated parmesan cheese"]:
             self.assertEqual(app._split_form_words(name), (name, set()), name)
 
+    def test_a_slow_candidate_is_skipped_not_fatal(self):
+        # #123: a timeout on one candidate's detail used to abandon the whole
+        # lookup. Real case: FDC 746782 (whole milk, Foundation) took 9.5 s.
+        import requests
+
+        def slow_first(url, params=None, timeout=None):
+            if url.endswith("/foods/search"):
+                return _FakeResponse({"foods": [
+                    {"fdcId": 746782, "description": "Milk, whole, 3.25% milkfat, with added vitamin D"},
+                    {"fdcId": 171265, "description": "Milk, whole, 3.25% milkfat, with added vitamin D"},
+                ]})
+            if url.endswith("/746782"):
+                raise requests.Timeout("read timed out")
+            return _FakeResponse({"foodPortions": [_portion(1.0, "cup", 244.0)]})
+
+        with mock.patch.object(app.requests, "get", slow_first):
+            self.assertEqual(app._usda_grams_per_unit("whole milk", ["cup"]), 244.0)
+
     def test_butter_resolves_to_plain_butter_not_ghee(self):
         # The #54 headline bug: bare "butter" used to top-match "Butter,
         # Clarified butter (ghee)" - it must resolve to plain salted
@@ -450,6 +468,14 @@ class LiveUsdaApiTests(unittest.TestCase):
     def test_spring_onion_gets_a_real_estimate(self):
         self.assertEqual(app._usda_grams_per_unit("spring onion", ["cup"]), 100.0)
 
+    def test_123_everyday_staples_resolve_to_the_right_food(self):
+        # #123: before the aliases these were a frozen milk dessert (137 g/cup),
+        # a rice-pilaf mix (206), a spinach souffle (136), buttermilk, and brown
+        # rice FLOUR (158). Values below are the live results for the intended
+        # entries (2026-09-29).
+        for name, grams in [("milk", 244.0), ("whole milk", 244.0), ("rice", 185.0),
+                            ("brown rice", 185.0), ("spinach", 30.0)]:
+            self.assertEqual(app._usda_grams_per_unit(name, ["cup"]), grams, name)
 
 if __name__ == "__main__":
     unittest.main()

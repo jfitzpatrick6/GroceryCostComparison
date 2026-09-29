@@ -2507,6 +2507,25 @@ _USDA_SEARCH_ALIASES = {
     # word count from 2 to 4 - a speculative entry, which CONTRIBUTING §6
     # forbids in these tables.
     "green onion": "onion spring scallion raw",
+    # #123, found in #78's live audit (2026-09-29). Each resolved to a
+    # different FOOD before - a wrong estimate, not a missing one:
+    #   milk    -> 167686 "Milk dessert, frozen, milk-fat free"  137 g/cup
+    #   rice    -> 168951 "Rice and vermicelli mix, rice pilaf"  206 g/cup
+    #   spinach -> 170494 "Spinach souffle"                      136 g/cup
+    # "1 cup milk" is in the household's own recipes. 2% is the target for
+    # plain "milk" because it's the everyday default; whole/2%/skim all weigh
+    # ~244-245 g/cup, so the choice doesn't move the estimate. Rice is RAW
+    # long-grain white: recipes measure rice uncooked, and that's what gets
+    # bought. "tomatoes" is deliberately NOT aliased - canned vs fresh is a
+    # real ambiguity, and the current canned answer may be what's meant.
+    "milk": "milk reduced fat fluid 2% milkfat",
+    "rice": "rice white long grain regular raw",
+    "spinach": "spinach raw",
+    # Two more misses the same live check turned up: "whole milk" resolved to
+    # "Milk, buttermilk, fluid, whole" and "brown rice" to "Rice flour, brown"
+    # (158 g/cup - flour, not grain).
+    "whole milk": "milk whole 3.25% milkfat",
+    "brown rice": "rice brown long grain raw",
 }
 
 
@@ -2689,12 +2708,21 @@ def _usda_resolve(query, measure_words, forms, api_key):
         # whole-word identity filter above, so this doesn't reopen the
         # same-word-different-food risk the rest of #54 is fixing.
         for food in foods[:5]:
-            detail = requests.get(
-                f"https://api.nal.usda.gov/fdc/v1/food/{food['fdcId']}",
-                params={"api_key": api_key},
-                timeout=5,
-            )
-            detail.raise_for_status()
+            # One slow or failing candidate skips to the next rather than
+            # abandoning the lookup (#123): FDC's Foundation record 746782 for
+            # whole milk took 9.5 s against this 5 s timeout, so "whole milk"
+            # returned None although the next candidate (171265) has a real
+            # cup portion. Since #64 this runs in a background worker, so the
+            # extra attempts cost no page any time.
+            try:
+                detail = requests.get(
+                    f"https://api.nal.usda.gov/fdc/v1/food/{food['fdcId']}",
+                    params={"api_key": api_key},
+                    timeout=5,
+                )
+                detail.raise_for_status()
+            except requests.RequestException:
+                continue
             matching = []
             for portion in detail.json().get("foodPortions") or []:
                 modifier = (portion.get("modifier") or "").lower()
