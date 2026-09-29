@@ -312,7 +312,10 @@ def _fetch_page(store, page):
     entirely (#24).
     """
     try:
-        response = requests.get(_browse_url(store, page))
+        # A timeout, because without one a stalled connection never returns and
+        # the None-means-truncated contract above never gets a chance to apply:
+        # the whole scheduled run hangs instead of reporting a short walk.
+        response = requests.get(_browse_url(store, page), timeout=60)
         if response.status_code != 200:
             print(f"[BJs] page {page}: HTTP {response.status_code}")
             return None
