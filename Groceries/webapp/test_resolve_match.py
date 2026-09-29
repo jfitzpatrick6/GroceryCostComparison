@@ -18,6 +18,7 @@ from the where-to-buy totals, which is the confident-wrong-answer failure mode
 this project is built to avoid.
 """
 
+import datetime
 import unittest
 
 import app
@@ -25,12 +26,16 @@ import matching
 
 
 def _row(product, store, price=1.00, unit_price=1.00, unit="lb", size="1 lb"):
-    # `_tokens` is what matching.load_catalog() precomputes and match_item() reads
-    # unconditionally, so a fixture without it is not shaped like a real catalog
-    # row. Building it with the real normalizer keeps these fixtures honest
-    # rather than hand-writing token lists that could drift from the real rules.
+    # Shaped exactly like a matching.load_catalog() row: product, store, price,
+    # size, unit_price, unit, datetime and the precomputed _tokens that
+    # match_item() reads unconditionally. Deliberately NO match_score - only the
+    # fuzzy path adds that, so a fixture carrying it would let a test assert on
+    # data the code never produces (which one did, before review caught it).
+    # _tokens is built with the real normalizer rather than hand-written, so the
+    # fixture cannot drift from the real tokenizing rules.
     return {"product": product, "store": store, "price": price, "size": size,
-            "unit_price": unit_price, "unit": unit, "match_score": 0.9,
+            "unit_price": unit_price, "unit": unit,
+            "datetime": datetime.datetime(2026, 9, 28, 3, 0),
             "_tokens": matching.normalize_tokens(product)}
 
 
@@ -110,12 +115,54 @@ class ResolveItemMatchTests(unittest.TestCase):
 
     def test_returns_the_catalog_row_shape_callers_depend_on(self):
         # where_to_buy annotates each row with package-fit fields and reads price /
-        # unit_price / size; /list reads product / store / match_score. If the
-        # pinned path ever returned a trimmed dict, those pages would break.
+        # unit_price / size; /list reads product / store. If the pinned path ever
+        # returned a trimmed dict, those pages would break.
         result = app.resolve_item_match(CATALOG, _item("bacon", "Wellsley Farms Bacon", "BJs"))
         row = result["BJs"]
-        for key in ("product", "store", "price", "size", "unit_price", "unit", "match_score"):
+        for key in ("product", "store", "price", "size", "unit_price", "unit", "datetime"):
             self.assertIn(key, row)
+
+    def test_the_matcher_working_state_does_not_leak_into_the_result(self):
+        # _tokens is load_catalog's precomputed scratch data. matching.match_item
+        # strips it; the pin path must too, or it reaches templates and any future
+        # serialization.
+        result = app.resolve_item_match(CATALOG, _item("bacon", "Wellsley Farms Bacon", "BJs"))
+        self.assertNotIn("_tokens", result["BJs"])
+
+    def test_two_items_pinned_to_the_same_product_do_not_share_one_dict(self):
+        """Regression for the bug review caught and nine single-item tests missed.
+
+        resolve_item_match originally returned the catalog row itself. where_to_buy
+        then calls _annotate_package_fit on it, which mutates packages_needed and
+        total_cost IN PLACE - so two list items pinned to the same product aliased
+        one object and the last annotation won for both. Measured: two pinned
+        Wellsley Farms Bacon at 1 lb and 5 lb both rendered $35.96, and the split
+        total came to $71.92 instead of $44.95. Reachable by clicking Add twice.
+
+        A confident wrong total is the exact failure this project exists to avoid,
+        and it is invisible in any test that only ever pins one item.
+        """
+        first = app.resolve_item_match(CATALOG, _item("bacon", "Wellsley Farms Bacon", "BJs"))
+        second = app.resolve_item_match(CATALOG, _item("bacon", "Wellsley Farms Bacon", "BJs"))
+
+        self.assertIsNot(first["BJs"], second["BJs"], "pinned matches must not alias")
+        self.assertIsNot(first["BJs"], CATALOG[0], "must not be the catalog row itself")
+
+        # Simulate what where_to_buy does: annotate one, then check the other and
+        # the shared catalog are untouched.
+        first["BJs"]["packages_needed"] = 5
+        first["BJs"]["total_cost"] = 35.96
+        self.assertNotIn("total_cost", second["BJs"])
+        self.assertNotIn("total_cost", CATALOG[0])
+
+    def test_annotating_one_pinned_match_does_not_change_what_the_catalog_returns(self):
+        # The same invariant from the catalog's side: load_catalog is called once
+        # per request and its rows are shared, so any per-item mutation that
+        # escapes into them corrupts every other item priced from that catalog.
+        result = app.resolve_item_match(CATALOG, _item("bacon", "Wellsley Farms Bacon", "BJs"))
+        result["BJs"]["total_cost"] = 999.0
+        fresh = app.resolve_item_match(CATALOG, _item("bacon", "Wellsley Farms Bacon", "BJs"))
+        self.assertNotIn("total_cost", fresh["BJs"])
 
 
 if __name__ == "__main__":

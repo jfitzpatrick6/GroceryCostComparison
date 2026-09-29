@@ -177,7 +177,21 @@ def resolve_item_match(catalog, item):
     if pinned_product and pinned_store:
         for row in catalog:
             if row["product"] == pinned_product and row["store"] == pinned_store:
-                return {row["store"]: row}
+                # A COPY, not the catalog row itself, and this is load-bearing
+                # rather than defensive. where_to_buy calls _annotate_package_fit
+                # on every row it prices, which mutates packages_needed and
+                # total_cost in place. Returning the shared dict meant two list
+                # items pinned to the same product aliased one object, so the last
+                # annotation won for both: two pinned Wellsley Farms Bacon at 1 lb
+                # and 5 lb both rendered $35.96 and the split total came to
+                # $71.92 instead of $44.95 - a confident wrong number, reachable by
+                # clicking Add twice. matching.match_item already copies for
+                # exactly this reason; the pin path must too.
+                #
+                # _tokens is dropped for the same reason match_item drops it: it is
+                # the matcher's working state, not something a template should see.
+                chosen = {k: v for k, v in row.items() if k != "_tokens"}
+                return {chosen["store"]: chosen}
     return matching.best_per_store(matching.match_item(catalog, item["name"]))
 
 
@@ -542,7 +556,12 @@ def list_pick():
     rows = []
     has_prices = False
     if query:
-        like = f"%{query}%"
+        # Escape LIKE's own metacharacters. Without this `q=%` matches every row
+        # and `q=2%` silently means "contains 2" - a wrong answer to a reasonable
+        # query. ESCAPE '\' is named explicitly rather than relying on the
+        # backslash default, which standard_conforming_strings can affect.
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
         conn = get_connection()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -552,10 +571,22 @@ def list_pick():
                     # finds the same things here. Ordered by unit rate then name
                     # because the point is comparing like-for-like prices, and
                     # capped so a one-letter query can't page 20k rows into a form.
+                    #
+                    # price IS NOT NULL is not cosmetic: a pinned row with a NULL
+                    # price would make float(None) raise in where_to_buy and
+                    # "%.2f"|format(None) fail in list.html, so both pages 500 -
+                    # and with /list down there is no Remove button left to undo
+                    # the pin. Don't offer what can't be priced.
+                    #
+                    # ESCAPE is written inline (the '\\' in this Python literal is
+                    # one backslash in the SQL) rather than relying on LIKE's
+                    # default escape character, which standard_conforming_strings
+                    # can affect.
                     cur.execute("""
                         SELECT product, store, price, size, unit_price, unit
                         FROM grocery_prices_latest
-                        WHERE product ILIKE %s OR store ILIKE %s
+                        WHERE (product ILIKE %s ESCAPE '\\' OR store ILIKE %s ESCAPE '\\')
+                          AND price IS NOT NULL
                         ORDER BY (unit_price IS NULL), unit_price, product
                         LIMIT 100
                     """, (like, like))
@@ -585,7 +616,13 @@ def add_pinned_list_item():
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                ensure_list_table(cur)
+                # No ensure_list_table() here, deliberately: CONTRIBUTING §8
+                # forbids adding an ensure_* call site in a request handler, and
+                # each one takes an AccessExclusiveLock on every request even when
+                # the columns already exist. init_schema.py creates every
+                # app-owned table at startup (#82), so the table is guaranteed to
+                # exist by the time any request runs. #66 removes the pre-existing
+                # call sites; this one simply does not add another.
                 cur.execute(
                     "INSERT INTO grocery_list_items "
                     "(name, qty, added_by, pinned_product, pinned_store) "
