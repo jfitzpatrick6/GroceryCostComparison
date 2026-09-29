@@ -106,10 +106,17 @@ def club_sale_price(data, store, listed, today=None):
     instead show an already-reduced `prices` value with the old one in
     `original_price.<club>`.
 
-    The sale applies only between its start and end dates (inclusive, by date;
-    the scrape runs at 03:00 so a sale starting "today" has started), and only
-    if it is actually lower. `online` sale prices are never used - they are the
-    ship-to-home channel, same reasoning as #96's no_store_price.
+    The sale applies only between its start and end dates (inclusive, by date),
+    and only if it is actually lower. "Today" is the container's date, which is
+    UTC: the 03:00 UTC scrape is ~23:00 Eastern the night before, so the UTC date
+    is the local day these prices will be used (BJs sales run 00:00-23:59).
+
+    A product can carry BOTH an already-reduced price (original_price) and an
+    active sale - four did on 2026-09-29 (Skittles: original 13.99, listed
+    6.98, sale 3.98). The compared price is the sale price, BJs' own declared
+    club price; "was" is the highest earlier price BJs states (review of #19).
+    `online` sale prices are never used - they are the ship-to-home channel,
+    same reasoning as #96's no_store_price.
     """
     today = today or datetime.date.today()
     sale = (data.get('sale_prices') or {}).get(store) or {}
@@ -119,13 +126,13 @@ def club_sale_price(data, store, listed, today=None):
         end = datetime.date.fromisoformat(str(sale['saleEnd'])[:10])
     except (KeyError, TypeError, ValueError):
         sale_price = None
-    if sale_price is not None and start <= today <= end and 0 < sale_price < listed:
-        return round(sale_price, 2), listed
     original = (data.get('original_price') or {}).get(store) or {}
     try:
         was = float(str(original['value']).strip().removeprefix("$"))
     except (KeyError, TypeError, ValueError):
         was = None
+    if sale_price is not None and start <= today <= end and 0 < sale_price < listed:
+        return round(sale_price, 2), max(listed, was or 0)
     return listed, (was if was is not None and was > listed else None)
 
 # group_ids under "grocery>" that are NOT departments - brand pages and

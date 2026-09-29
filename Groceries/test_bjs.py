@@ -533,6 +533,12 @@ class ClubSalePriceTests(unittest.TestCase):
         # Special K Pastry Crisps: prices 7.48, original_price 10.99.
         self.assertEqual(BJs.club_sale_price(self._data(original="10.99"), "9999", 7.48, self.TODAY), (7.48, 10.99))
 
+    def test_stacked_discount_shows_the_highest_was_price(self):
+        # Skittles, live 2026-09-29: original 13.99, listed 6.98, active sale 3.98.
+        sale = {"salePrice": "3.98000", "saleStart": "2026-09-18 00:00:00.0", "saleEnd": "2026-10-01 23:59:59.0"}
+        data = self._data(sale, original="13.99")
+        self.assertEqual(BJs.club_sale_price(data, "9999", 6.98, self.TODAY), (3.98, 13.99))
+
     def test_malformed_sale_is_ignored_not_fatal(self):
         sale = {"salePrice": "n/a", "saleStart": "soon", "saleEnd": None}
         self.assertEqual(BJs.club_sale_price(self._data(sale), "9999", 18.99, self.TODAY), (18.99, None))
