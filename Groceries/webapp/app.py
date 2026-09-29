@@ -462,33 +462,86 @@ def index():
     return render_template("index.html")
 
 
+def group_search_results(matches, stores):
+    """match_item() results -> one column per store, best candidate first (#107).
+
+    Ordered by match score, then unit price, so within equally good matches the
+    cheaper one leads - the same "identity first, price only breaks ties" rule
+    best_per_store() uses, for the same reason: price must not promote a
+    different product over the one asked for. Every store in `stores` gets a
+    column even when it has no match, so "not sold here" is said rather than
+    shown as a missing column (the "No price match found" principle from #25).
+
+    Deliberately NOT truncated. Measured on the live catalogue: for "chicken
+    breast" at Tops the name matcher ranks deli and nugget products first, and
+    the raw breasts ("TOPS Boneless Chicken Breast Skinless with Rib Meat",
+    Springer Mountain) come 12th and 14th of 27. A top-8 cut would have hidden
+    exactly what the shopper was looking for; a scrolling column hides nothing.
+    """
+    by_store = {store: [] for store in stores}
+    for m in matches:
+        by_store.setdefault(m["store"], []).append(m)
+    columns = []
+    for store in sorted(by_store):
+        found = by_store[store]
+        found.sort(key=lambda m: (
+            -m["match_score"],
+            m["unit_price"] if m.get("unit_price") is not None else float("inf"),
+        ))
+        columns.append({"store": store, "total": len(found), "rows": found})
+    return columns
+
+
 @app.route("/prices")
 def prices():
     query = request.args.get("q", "").strip()
     sort = request.args.get("sort", "unit_price")
     order_by = SORT_COLUMNS.get(sort, SORT_COLUMNS["unit_price"])
-
-    sql = f"""
-        SELECT product, store, price, size, unit_price, unit, datetime
-        FROM grocery_prices_latest
-        WHERE product ILIKE %s OR store ILIKE %s
-        ORDER BY {order_by}
-        LIMIT 500
-    """
-    like_query = f"%{query}%"
+    # "all" keeps the old flat, sortable substring table reachable - it is still
+    # the right tool for browsing ("everything with 'chicken' in it, cheapest
+    # per lb first") and for searching by store name.
+    view = request.args.get("view", "")
 
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if price_data_available(cur):
-                cur.execute(sql, (like_query, like_query))
-                rows = cur.fetchall()
-            else:
-                rows = []
+            if not price_data_available(cur):
+                return render_template("prices.html", rows=[], columns=None, query=query, sort=sort)
+            # A product search goes through the same matcher as the grocery list
+            # (#107). The substring search this replaces could not put the right
+            # products side by side: "chicken breast" returned 88 rows sorted by
+            # unit price, with nuggets, canned chunk, deli meat and a dog treat
+            # interleaved with raw breasts, and Aldi's "per lb" listings (no unit
+            # price) sorted to the very end.
+            #
+            # The store list comes from the catalog rather than a SELECT DISTINCT
+            # on the view, which would walk every retained row a second time
+            # (#65). A query that IS a store name ("bjs") falls through to the
+            # substring table, which is what that search has always meant.
+            catalog = matching.load_catalog(cur) if query and view != "all" else None
+            stores = sorted({row["store"] for row in catalog}) if catalog else []
+            if catalog is not None and query.lower() not in {s.lower() for s in stores}:
+                columns = group_search_results(matching.match_item(catalog, query), stores)
+                return render_template(
+                    "prices.html", rows=[], columns=columns, query=query, sort=sort,
+                    low_confidence=matching.LOW_CONFIDENCE_SCORE,
+                    freshness=price_freshness_from_catalog(catalog),
+                )
+
+            sql = f"""
+                SELECT product, store, price, size, unit_price, unit, datetime
+                FROM grocery_prices_latest
+                WHERE product ILIKE %s OR store ILIKE %s
+                ORDER BY {order_by}
+                LIMIT 500
+            """
+            like_query = f"%{query}%"
+            cur.execute(sql, (like_query, like_query))
+            rows = cur.fetchall()
     finally:
         conn.close()
 
-    return render_template("prices.html", rows=rows, query=query, sort=sort)
+    return render_template("prices.html", rows=rows, columns=None, query=query, sort=sort, view=view)
 
 
 @app.route("/staples")
