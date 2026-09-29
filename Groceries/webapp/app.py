@@ -2267,8 +2267,16 @@ def _usda_grams_per_unit(name, measure_words):
 #
 # Why a thread and not the scheduler (#64's first suggestion): the scraper image
 # does not contain the webapp's code, and a thread needs no new service. Why
-# ONE thread: USDA rate-limits per key, and serialising keeps a new week with
-# 25 misses from firing 150 requests at once.
+# one thread per process: USDA rate-limits per key, and serialising keeps a new
+# week with 25 misses from firing 150 requests at once.
+#
+# All of this state is PER GUNICORN WORKER (the entrypoint runs --workers 2),
+# not global. Refreshes can land on either worker, so an item can be looked up
+# once by each, and a failed lookup keeps showing "estimating" until both have
+# recorded it - at worst twice the requests and twice the wait, and it still
+# converges. The cache table is shared, so any SUCCESS is seen by both workers
+# at once. Accepted rather than solved with shared state: two lookups instead
+# of one, for a household, is not worth a coordination mechanism.
 #
 # Failures are remembered in memory for _USDA_MISS_TTL rather than in the
 # table. _usda_grams_per_unit returns None for "no key", "no network" and "FDC
@@ -2291,7 +2299,10 @@ def _usda_resolve_in_background(name, unit, measure_words):
     try:
         grams = _usda_grams_per_unit(name, measure_words)
         if grams is not None:
-            conn = get_connection()
+            # connect_timeout: this is the worker's only thread, so a db host
+            # that stops answering would otherwise park it in connect() and
+            # leave every later item "estimating".
+            conn = get_connection(connect_timeout=5)
             try:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -2306,10 +2317,13 @@ def _usda_resolve_in_background(name, unit, measure_words):
     except Exception:
         app.logger.exception("background USDA lookup failed for %r (%s)", name, unit)
         grams = None
-    with _usda_lock:
-        _usda_pending.discard(key)
-        if grams is None:
-            _usda_misses[key] = time.monotonic()
+    finally:
+        # In `finally` so even a BaseException that escapes the handler above
+        # clears the key; a key left pending makes the page refresh forever.
+        with _usda_lock:
+            _usda_pending.discard(key)
+            if grams is None:
+                _usda_misses[key] = time.monotonic()
 
 
 def _usda_worker_loop():

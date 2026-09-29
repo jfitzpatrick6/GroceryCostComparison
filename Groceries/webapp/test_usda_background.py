@@ -5,6 +5,10 @@ _usda_grams_per_unit is patched. What is guarded here is the latency contract
 (a cache miss never calls USDA on the request thread), that the background
 worker banks each result with its own commit, and that a failed lookup settles
 to "no estimate" rather than "estimating" forever.
+
+Not covered: two gunicorn workers each holding their own pending/miss state.
+That duplication is accepted and explained beside _USDA_MISS_TTL in app.py; it
+converges, and testing it would need real forked processes.
 """
 
 import threading
@@ -91,7 +95,7 @@ class BackgroundLookupTests(unittest.TestCase):
 
         conn = _RecordingConn()
         with mock.patch.object(app, "_usda_grams_per_unit", slow_usda), \
-                mock.patch.object(app, "get_connection", lambda: conn):
+                mock.patch.object(app, "get_connection", lambda **kw: conn):
             start = time.monotonic()
             result = app.resolve_purchase_amount(_MissCursor(), "flour", "2", "cup")
             elapsed = time.monotonic() - start
@@ -103,7 +107,7 @@ class BackgroundLookupTests(unittest.TestCase):
     def test_worker_commits_the_result_on_its_own_connection(self):
         conn = _RecordingConn()
         with mock.patch.object(app, "_usda_grams_per_unit", lambda n, w: 125.0), \
-                mock.patch.object(app, "get_connection", lambda: conn):
+                mock.patch.object(app, "get_connection", lambda **kw: conn):
             app.resolve_purchase_amount(_MissCursor(), "flour", "2", "cup")
             _wait_until_settled()
         self.assertEqual(conn.commits, 1)
