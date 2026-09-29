@@ -1,0 +1,857 @@
+/* ==========================================================================
+   Grocery Cost Comparison — design system (#101)
+
+   One file, no build step, no external dependencies. That last part is a
+   requirement rather than a preference: this is a self-hosted household app that
+   has to work on a LAN with no internet route, so a CDN font or an icon library
+   would turn "offline" into "broken". System font stack and text glyphs only.
+
+   Everything visual is a token defined once on :root and overridden for dark
+   mode. Templates use semantic classes, never raw hex and never style="" — so
+   changing the palette is one edit here and cannot drift between pages.
+
+   The design priority is set by how the app is actually used (#49): a phone, in
+   a store, one-handed, deciding whether to buy this here or drive somewhere
+   else. That makes visual hierarchy a functional requirement — which number is
+   the total, which store won, which match the app is unsure about — not
+   decoration. Hence tabular figures on every price, a distinct treatment for
+   the "cheapest" answer, and warnings that use colour AND a glyph AND words.
+   ========================================================================== */
+
+/* --- Tokens: light -------------------------------------------------------- */
+:root {
+    /* Warm neutrals rather than pure grey. A grocery app reads as clinical on
+       true grey; a slight warm cast is the difference between "spreadsheet" and
+       "something in my kitchen". */
+    --bg:               #f7f5f2;
+    --surface:          #ffffff;
+    --surface-sunken:   #f0ede8;
+    --surface-raised:   #ffffff;
+    --border:           #e2ded7;
+    /* --border-strong is the boundary of inputs and default buttons, so it has
+       to clear 3:1 against --surface per WCAG 1.4.11 (non-text contrast) - a
+       decorative hairline is not enough to identify a form field. The previous
+       #cbc5ba measured 1.72:1 and failed. Still warm rather than neutral grey so
+       it sits in the same palette as everything else. */
+    --border-strong:    #857e73;
+
+    --text:             #1e1c19;
+    --text-muted:       #625d56;
+    --text-faint:       #6f6a61;   /* was #857f76: 3.97:1 on --surface, 3.40:1 on --surface-sunken - fails AA for the 12px text it paints (#101 review) */
+    --text-on-primary:  #ffffff;
+
+    /* Primary is a deep produce green. Dark enough for white text on it at
+       AA (measured 5.4:1) and for itself as text on white (5.4:1). */
+    --primary:          #1a6b45;
+    --primary-hover:    #145636;
+    --primary-active:   #0f4329;
+    --primary-soft:     #e4f0e9;
+    --primary-soft-border: #b7d6c4;
+
+    /* Accent is terracotta, used only for the number that matters most on a
+       page (a trip total, the winning store). Restrained on purpose: if
+       everything is emphasised, nothing is. */
+    --accent:           #a4491c;
+    --accent-soft:      #fbeee6;
+
+    --danger:           #a72b21;
+    --danger-hover:     #8c231b;
+    --danger-soft:      #fbeae8;
+    --danger-border:    #eabdb8;
+
+    --warning:          #7a5200;
+    --warning-soft:     #fdf3dd;
+    --warning-border:   #e8cf9a;
+
+    --success:          #1a6b45;
+    --success-soft:     #e4f0e9;
+    --success-border:   #b7d6c4;
+
+    --info:             #1c5580;
+    --info-soft:        #e8f0f7;
+    --info-border:      #b9cfdf;
+
+    /* Type. System stack: no download, correct weights on every platform, and
+       the numerals are the reason tabular-nums is set separately below. */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 "Liberation Mono", monospace;
+
+    --text-xs:   0.75rem;    /* 12px — badges, metadata */
+    --text-sm:   0.875rem;   /* 14px — secondary text, table cells */
+    --text-base: 1rem;       /* 16px — body; never smaller, or iOS zooms inputs */
+    --text-lg:   1.125rem;
+    --text-xl:   1.375rem;
+    --text-2xl:  1.75rem;
+
+    --leading-tight: 1.25;
+    --leading-body:  1.55;
+
+    /* Spacing on a 4px scale. Consistency here is what makes the pages look
+       designed rather than assembled. */
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.5rem;
+    --space-6: 2rem;
+    --space-7: 3rem;
+
+    --radius-sm: 6px;
+    --radius:    10px;
+    --radius-lg: 14px;
+    --radius-pill: 999px;
+
+    --shadow-sm: 0 1px 2px rgba(30, 28, 25, 0.06), 0 1px 3px rgba(30, 28, 25, 0.04);
+    --shadow:    0 2px 4px rgba(30, 28, 25, 0.06), 0 4px 12px rgba(30, 28, 25, 0.05);
+    --shadow-lg: 0 8px 24px rgba(30, 28, 25, 0.10);
+
+    /* Tap target. 44px is the iOS/Android minimum; the app is used in a store
+       with one hand, often while pushing a trolley, so this is not negotiable. */
+    --tap: 2.75rem;
+
+    --focus-ring: 0 0 0 3px rgba(26, 107, 69, 0.35);
+
+    --max-width: 68rem;
+    --nav-height: 3.25rem;
+}
+
+/* --- Tokens: dark ---------------------------------------------------------
+   Driven by the same names, so no component can diverge between modes. Not a
+   mirror of the light palette: surfaces go warm-dark rather than neutral-black,
+   and the primaries lighten (a dark green on a dark surface fails contrast even
+   though the same green on white passes). */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg:               #161513;
+        --surface:          #1e1c1a;
+        --surface-sunken:   #131211;
+        --surface-raised:   #262422;
+        --border:           #34312e;
+        --border-strong:    #7d766d;   /* 3:1 against --surface, see light note */
+
+        --text:             #f2efe9;
+        --text-muted:       #b5aea4;
+        --text-faint:       #8d867c;
+        --text-on-primary:  #08130d;
+
+        --primary:          #6cc395;
+        --primary-hover:    #85d0a8;
+        --primary-active:   #9ddbba;
+        --primary-soft:     #1b3227;
+        --primary-soft-border: #2f5a43;
+
+        --accent:           #e8955f;
+        --accent-soft:      #332115;
+
+        --danger:           #ef9089;
+        --danger-hover:     #f4a9a3;
+        --danger-soft:      #35201e;
+        --danger-border:    #5e3733;
+
+        --warning:          #e0b25f;
+        --warning-soft:     #322715;
+        --warning-border:   #5c4823;
+
+        --success:          #6cc395;
+        --success-soft:     #1b3227;
+        --success-border:   #2f5a43;
+
+        --info:             #86b8dd;
+        --info-soft:        #17252f;
+        --info-border:      #2c4a61;
+
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+        --shadow:    0 2px 6px rgba(0, 0, 0, 0.45);
+        --shadow-lg: 0 10px 28px rgba(0, 0, 0, 0.55);
+
+        --focus-ring: 0 0 0 3px rgba(108, 195, 149, 0.45);
+    }
+}
+
+/* --- Base ------------------------------------------------------------------ */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-body);
+    /* Prices are the product. Without tabular figures, $12.99 and $8.40 have
+       digits of differing width and columns of them do not line up, which makes
+       scanning a comparison table noticeably harder. */
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+}
+
+main {
+    display: block;
+    max-width: var(--max-width);
+    margin: 0 auto;
+    padding: var(--space-5) var(--space-4) var(--space-7);
+}
+
+h1, h2, h3 { line-height: var(--leading-tight); margin: 0 0 var(--space-3); font-weight: 650; }
+h1 { font-size: var(--text-2xl); letter-spacing: -0.015em; }
+h2 { font-size: var(--text-xl); letter-spacing: -0.01em; margin-top: var(--space-6); }
+h3 { font-size: var(--text-lg); }
+
+p { margin: 0 0 var(--space-3); }
+
+a { color: var(--primary); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { color: var(--primary-hover); }
+
+hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
+
+code, 
+/* Visible focus on everything interactive. Keyboard users are a small fraction
+   of a household but the cost of omitting this is total exclusion, and a
+   :focus-visible ring costs nothing for mouse users. */
+a:focus-visible, button:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-radius: var(--radius-sm);
+}
+
+/* --- App bar --------------------------------------------------------------- */
+.appbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    backdrop-filter: saturate(1.4) blur(8px);
+    border-bottom: 1px solid var(--border);
+}
+
+.appbar__inner {
+    max-width: var(--max-width);
+    margin: 0 auto;
+    padding: var(--space-2) var(--space-4);
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-height: var(--nav-height);
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-weight: 700;
+    font-size: var(--text-lg);
+    letter-spacing: -0.02em;
+    color: var(--text);
+    text-decoration: none;
+    white-space: nowrap;
+}
+.brand:hover { color: var(--text); }
+.brand__mark {
+    display: grid;
+    place-items: center;
+    width: 1.85rem;
+    height: 1.85rem;
+    border-radius: var(--radius-sm);
+    background: var(--primary);
+    color: var(--text-on-primary);
+    font-size: 1rem;
+    line-height: 1;
+}
+
+/* Nav scrolls horizontally on a phone instead of wrapping to four lines, and
+   the current page is marked by weight + an underline bar rather than only by
+   colour, so it survives colour-vision deficiency. */
+/* padding + negative margin so the box-shadow focus ring is not clipped by the
+   horizontal scroll container's edge (outline:none means the ring IS the focus
+   indicator, and a clipped focus indicator is no focus indicator). */
+.nav { display: flex; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; flex: 1; padding: 3px; margin: -3px; }
+.nav::-webkit-scrollbar { display: none; }
+.nav a {
+    flex: 0 0 auto;
+    min-height: var(--tap);
+    display: inline-flex;
+    align-items: center;
+    padding: 0 var(--space-3);
+    border-radius: var(--radius-pill);
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: var(--text-sm);
+    font-weight: 550;
+    white-space: nowrap;
+    transition: background-color 0.15s, color 0.15s;
+}
+.nav a:hover { background: var(--surface-sunken); color: var(--text); }
+.nav a[aria-current="page"] {
+    background: var(--primary-soft);
+    color: var(--primary);
+    font-weight: 650;
+    box-shadow: inset 0 -2px 0 var(--primary);
+}
+
+.who {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: 0 0 auto;
+}
+.who__label { font-size: var(--text-xs); color: var(--text-faint); white-space: nowrap; }
+
+/* --- Buttons --------------------------------------------------------------- */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    min-height: var(--tap);
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    line-height: 1.2;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s, transform 0.05s;
+}
+.btn:hover { background: var(--surface-sunken); border-color: var(--text-faint); color: var(--text); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn--primary { background: var(--primary); border-color: var(--primary); color: var(--text-on-primary); }
+.btn--primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: var(--text-on-primary); }
+
+.btn--danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn--danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); color: #fff; }
+
+/* Small is still ≥36px: the "Remove" and "Check off" buttons sit in dense table
+   rows, but they are used at the store with one hand and must stay hittable. */
+.btn--sm { min-height: 2.25rem; padding: var(--space-1) var(--space-3); font-size: var(--text-xs); }
+.btn--quiet { border-color: transparent; background: transparent; color: var(--text-muted); }
+.btn--quiet:hover { background: var(--surface-sunken); color: var(--text); }
+
+/* --- Forms ----------------------------------------------------------------- */
+.field { display: flex; flex-direction: column; gap: var(--space-1); }
+.label { font-size: var(--text-sm); font-weight: 600; color: var(--text-muted); }
+
+input[type=text], input[type=number], input[type=search], input[type=date],
+select, textarea {
+    min-height: var(--tap);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    /* 16px minimum: iOS Safari zooms the page on focus for anything smaller,
+       which is jarring precisely when someone is typing a list item at a store. */
+    font: inherit;
+    font-size: var(--text-base);
+    width: 100%;
+}
+input::placeholder, textarea::placeholder { color: var(--text-faint); }
+input:hover, select:hover, textarea:hover { border-color: var(--text-faint); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: var(--focus-ring); }
+textarea { min-height: 7rem; line-height: var(--leading-body); resize: vertical; }
+
+.form-row { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: flex-end; }
+.form-row > .field { flex: 1 1 12rem; }
+.form-row > .btn { flex: 0 0 auto; }
+.hint { font-size: var(--text-xs); color: var(--text-faint); }
+
+/* --- Cards ----------------------------------------------------------------- */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-4);
+    box-shadow: var(--shadow-sm);
+}
+.card + .card { margin-top: var(--space-4); }
+.card__title { font-size: var(--text-lg); font-weight: 650; margin: 0 0 var(--space-2); }
+
+/* --- Tables ----------------------------------------------------------------
+   Tables are the app's primary data shape, so they get the most attention.
+   The header sticks on long lists (a 23k-row price table otherwise loses its
+   column meanings after one scroll), numeric columns right-align, and rows get
+   a hover state so the eye can track across a wide row on a phone. */
+.table-wrap {
+    margin-top: var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: auto;
+    box-shadow: var(--shadow-sm);
+    /* On a phone the table scrolls inside its own card and the page never
+       scrolls sideways. Preserved from the earlier mobile work (#49). */
+    -webkit-overflow-scrolling: touch;
+}
+table { border-collapse: collapse; width: 100%; font-size: var(--text-sm); }
+caption {
+    caption-side: top;
+    text-align: left;
+    padding: var(--space-3) var(--space-4);
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+}
+th, td { padding: var(--space-3) var(--space-4); text-align: left; vertical-align: middle; }
+thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface-sunken);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--border-strong);
+}
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:last-child { border-bottom: 0; }
+tbody tr:hover { background: var(--surface-sunken); }
+
+.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+th.num { text-align: right; }
+.price { font-weight: 650; white-space: nowrap; }
+/* The unit rate is reference information; the total is the decision. Different
+   weights so the eye lands on the right one without reading. */
+.rate { color: var(--text-muted); font-size: var(--text-xs); white-space: nowrap; }
+
+/* A row the app is confident won gets a quiet left bar. Only used for the
+   cheapest-per-item answer, so "this is the recommendation" is legible without
+   a legend. */
+tr.is-checked { color: var(--text-faint); }
+tr.is-checked .item-name { text-decoration: line-through; }
+
+/* --- Badges ---------------------------------------------------------------- */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    padding: 0.15em 0.6em;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-strong);
+    background: var(--surface-sunken);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+.badge--store { background: var(--info-soft); border-color: var(--info-border); color: var(--info); }
+.badge--ok    { background: var(--success-soft); border-color: var(--success-border); color: var(--success); }
+.badge--warn  { background: var(--warning-soft); border-color: var(--warning-border); color: var(--warning); }
+.badge--muted { background: transparent; border-color: var(--border); color: var(--text-faint); }
+
+/* --- Alerts / flash --------------------------------------------------------
+   Semantic colour AND a glyph AND words. Colour alone excludes roughly 1 in 12
+   men, and the low-confidence match warning in particular must not be
+   dismissible as decoration — it is the app admitting it might be wrong. */
+.alert {
+    display: flex;
+    gap: var(--space-3);
+    align-items: flex-start;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
+    border-left-width: 4px;
+    border-radius: var(--radius);
+    background: var(--surface);
+    margin: var(--space-4) 0;
+    font-size: var(--text-sm);
+}
+.alert__icon { flex: 0 0 auto; font-size: var(--text-lg); line-height: 1.3; }
+.alert__body { flex: 1 1 auto; min-width: 0; }
+.alert__title { font-weight: 650; margin-bottom: 0.15em; }
+.alert--ok      { border-left-color: var(--success); background: var(--success-soft); border-color: var(--success-border); }
+.alert--info    { border-left-color: var(--info);    background: var(--info-soft);    border-color: var(--info-border); }
+.alert--warning { border-left-color: var(--warning); background: var(--warning-soft); border-color: var(--warning-border); }
+.alert--danger  { border-left-color: var(--danger);  background: var(--danger-soft);  border-color: var(--danger-border); }
+.alert--quiet   { border-left-color: var(--border-strong); background: var(--surface-sunken); }
+
+/* The inline "not sure this is what you meant" marker under a matched product.
+   Smaller than an alert because it repeats per row, but it keeps glyph + words
+   for the same reason. */
+.unsure {
+    display: flex;
+    align-items: center;
+    gap: 0.3em;
+    margin-top: 0.2em;
+    color: var(--warning);
+    font-size: var(--text-xs);
+    font-weight: 600;
+}
+
+/* --- Empty states ----------------------------------------------------------
+   An empty table with "Nothing here" reads as broken. Every empty state says
+   what the feature is for and what to do first, because a family seeing the
+   pantry or staples empty on day one has no other way to learn what they do. */
+.empty {
+    padding: var(--space-6) var(--space-4);
+    text-align: center;
+    color: var(--text-muted);
+}
+.empty__glyph { font-size: 2rem; line-height: 1; margin-bottom: var(--space-3); opacity: 0.55; }
+.empty__title { font-size: var(--text-lg); font-weight: 650; color: var(--text); margin-bottom: var(--space-2); }
+.empty p { max-width: 34rem; margin: 0 auto var(--space-4); font-size: var(--text-sm); }
+
+/* --- Page furniture -------------------------------------------------------- */
+.page-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3); justify-content: space-between; }
+.page-head h1 { margin-bottom: 0; }
+.subtitle { color: var(--text-muted); font-size: var(--text-sm); margin: var(--space-1) 0 var(--space-4); max-width: 46rem; }
+.backlink { display: inline-flex; align-items: center; gap: 0.35em; font-size: var(--text-sm); margin-bottom: var(--space-3); }
+.stack > * + * { margin-top: var(--space-4); }
+.row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+.row--tight { gap: var(--space-1); }
+.spacer { flex: 1 1 auto; }
+.muted { color: var(--text-muted); }
+.faint { color: var(--text-faint); }
+.small { font-size: var(--text-sm); }
+.tiny { font-size: var(--text-xs); }
+.item-name { font-weight: 600; color: var(--text); }
+.nowrap { white-space: nowrap; }
+
+/* Totals strip on where-to-buy: the single most-read number on the most
+   decision-relevant page gets to be visually distinct. */
+.totals { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-4); }
+.totals__item {
+    flex: 1 1 14rem;
+    padding: var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+}
+.totals__item.is-best { border-color: var(--primary); background: var(--primary-soft); }
+.totals__label { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 700; }
+.totals__value { font-size: var(--text-2xl); font-weight: 700; letter-spacing: -0.02em; margin-top: var(--space-1); }
+.totals__item.is-best .totals__value { color: var(--primary); }
+.totals__note { font-size: var(--text-xs); color: var(--text-muted); margin-top: var(--space-1); }
+
+/* --- Skip link ---------------------------------------------------------------
+   The first focusable element on the page. Invisible until focused, then it
+   appears over the app bar so a keyboard user can get past nine nav links and
+   the profile select to reach the content. */
+.skip-link {
+    position: absolute;
+    left: var(--space-3);
+    top: -3rem;
+    z-index: 40;
+    padding: var(--space-2) var(--space-4);
+    background: var(--primary);
+    color: var(--text-on-primary);
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    font-weight: 600;
+    text-decoration: none;
+    transition: top 0.15s;
+}
+.skip-link:focus { top: 0; }
+
+/* A tick box that exists only on paper. Someone prints the list to take to the
+   store; hiding the check-off forms in print (correct - you can't submit paper)
+   left no way to mark items off, which defeats the point of printing it. */
+.print-box { display: none; }
+@media print {
+    .print-box {
+        display: inline-block;
+        width: 1.1em;
+        height: 1.1em;
+        border: 1.5px solid #000;
+        border-radius: 2px;
+        vertical-align: -0.15em;
+        margin-right: 0.4em;
+    }
+}
+
+/* --- Accessibility helpers -------------------------------------------------- */
+/* Visually hidden but present for screen readers. Used for the "Actions" column
+   header and for labelling the planner's per-day controls, which would otherwise
+   be an unlabeled <select> repeated seven times. */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* --- Lists of ingredients --------------------------------------------------- */
+.ingredient-list { list-style: none; margin: 0; padding: 0; }
+.ingredient-list li {
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+}
+.ingredient-list li:last-child { border-bottom: 0; }
+.ingredient-list .qty {
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    min-width: 3ch;
+}
+.ingredient-list .unit { color: var(--text-muted); font-size: var(--text-sm); }
+
+/* The matched retailer product, as distinct from what the user typed. Slightly
+   quieter than the item name so the two are visually separable in a row that
+   shows both (#97). */
+.match-product { display: block; color: var(--text); font-size: var(--text-sm); }
+.match-product + .badge { margin-top: 0.2em; }
+
+/* --- Chips (planner recipe / extra pills) ----------------------------------- */
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0.3rem 0.35rem 0.3rem 0.7rem;
+    border: 1px solid var(--primary-soft-border);
+    border-radius: var(--radius-pill);
+    background: var(--primary-soft);
+    font-size: var(--text-sm);
+    max-width: 100%;
+}
+.chip--extra { background: var(--surface-sunken); border-color: var(--border-strong); }
+.chip__name { font-weight: 600; }
+.chip__form { display: inline-flex; align-items: center; gap: 0.3em; margin: 0; }
+.chip__label { color: var(--text-muted); font-size: var(--text-xs); }
+.chip__flag { color: var(--accent); font-weight: 700; }
+.chip__num {
+    width: 3.6em;
+    min-height: 1.9rem;
+    padding: 0.1rem 0.3rem;
+    text-align: center;
+    font-size: var(--text-sm);
+    border-radius: var(--radius-sm);
+}
+.chip__x {
+    display: grid;
+    place-items: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.chip__x:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* --- Tabs (planner meal selector) ------------------------------------------- */
+.tabs {
+    display: flex;
+    gap: var(--space-1);
+    border-bottom: 1px solid var(--border);
+    margin: var(--space-4) 0 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 3px 3px 0;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tabs__tab {
+    flex: 0 0 auto;
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-decoration: none;
+    margin-bottom: -1px;
+}
+.tabs__tab:hover { background: var(--surface-sunken); color: var(--text); }
+.tabs__tab.is-active {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--primary);
+    font-weight: 700;
+    box-shadow: inset 0 3px 0 var(--primary);
+}
+
+/* --- Planner table ---------------------------------------------------------- */
+.weeknav { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.planner .day-cell { text-align: left; vertical-align: top; white-space: nowrap; }
+.day-name { display: block; font-weight: 650; }
+.day-date { display: block; color: var(--text-faint); font-size: var(--text-xs); font-weight: 400; }
+tr.is-today > td, tr.is-today > th { background: var(--primary-soft); }
+tr.is-today:hover > td, tr.is-today:hover > th { background: var(--primary-soft); }
+.day-add { display: flex; flex-direction: column; gap: var(--space-2); }
+.day-add .form-row { gap: var(--space-2); }
+.used { margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px dashed var(--border-strong); }
+.used__title { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 700; margin-bottom: var(--space-2); }
+.used__row { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); }
+.used__name { font-size: var(--text-sm); }
+
+/* A pantry row at or below its threshold. The badge carries the meaning in words
+   and a glyph, so the row tint is reinforcement rather than the only signal. */
+tr.is-low > td:first-child { box-shadow: inset 3px 0 0 var(--warning); }
+
+/* Narrow numeric input used inline in table cells (pantry "low at"). Full-size
+   inputs would blow out the row height. */
+.num-input { width: 5em; min-height: 2.25rem; padding: 0.2rem 0.4rem; text-align: right; }
+
+/* --- Alert internals -------------------------------------------------------- */
+.alert__note { margin-top: var(--space-2); font-size: var(--text-xs); color: var(--text-muted); }
+.fresh-stores { margin-top: var(--space-2); }
+.low-list { list-style: none; margin: var(--space-2) 0 0; padding: 0; }
+.low-list li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    padding: var(--space-1) 0;
+    border-top: 1px solid var(--warning-border);
+}
+.low-list li:first-child { border-top: 0; }
+
+/* --- Disclosure (recipe paste import) --------------------------------------- */
+details.card > summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::before {
+    content: "\25B8";
+    color: var(--text-muted);
+    transition: transform 0.15s;
+}
+details[open].card > summary::before { transform: rotate(90deg); }
+details.card[open] > summary { margin-bottom: var(--space-3); }
+
+/* --- Responsive -------------------------------------------------------------
+   Mobile-first adjustments. The base styles above already work at 360px; this
+   only tightens density and reflows the app bar. */
+@media (max-width: 720px) {
+    .appbar__inner { flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3); }
+    .brand { font-size: var(--text-base); }
+    .nav { order: 3; flex-basis: 100%; }
+    .who { margin-left: auto; }
+    main { padding: var(--space-4) var(--space-3) var(--space-6); }
+    h1 { font-size: var(--text-xl); }
+    th, td { padding: var(--space-2) var(--space-3); }
+    /* Below this width a wide table is better read as stacked rows than
+       scrolled sideways, but the table keeps its own scroll as a fallback so
+       nothing is ever unreachable. */
+    .totals__item { flex-basis: 100%; }
+
+    /* The grocery list is the page used at the store, one-handed (#49). Six
+       columns at 390px push the match - the price and the "not sure" warning,
+       i.e. the only information that matters while deciding - off-screen behind
+       a horizontal scroll. So on narrow screens each row becomes a card and
+       every field is visible without scrolling sideways. Labels come from
+       data-label attributes, which desktop ignores entirely. */
+    .table--cards { overflow: visible; }
+    .table--cards table,
+    .table--cards tbody,
+    .table--cards td { display: block; width: 100%; }
+    .table--cards thead { display: none; }
+    .table--cards tbody tr {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: var(--shadow-sm);
+        padding: var(--space-3);
+        margin: 0 0 var(--space-3);
+    }
+    .table--cards tbody tr:last-child { margin-bottom: 0; }
+    .table--cards tbody tr:hover { background: var(--surface); }
+    .table--cards td { border: 0; padding: var(--space-1) 0; text-align: left; }
+    .table--cards td::before {
+        content: attr(data-label);
+        display: block;
+        font-size: var(--text-xs);
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-faint);
+    }
+    /* Cells with no label are action rows; no empty caption above them. */
+    .table--cards td[data-label=""]::before { content: none; }
+    .table--cards td[data-label=""] { padding-top: var(--space-2); }
+    /* The item name is the card's title: no caption, larger type. Qty is folded
+       into it at this width (its own cell is hidden) so the card doesn't say the
+       same thing twice. */
+    .table--cards td.card-title-cell::before { content: none; }
+    .table--cards td.card-title-cell { padding-bottom: var(--space-2); }
+    .table--cards td.card-title-cell .item-name { font-size: var(--text-lg); }
+    .table--cards td[data-label="Qty"] { display: none; }
+    /* Order matters more than labels here. The DOM order is check-button first
+       (it is the first column on desktop), which on a card put the action above
+       the thing it acts on. The card should read: what it is, what it matched and
+       costs, then what you can do about it. */
+    .table--cards td.card-title-cell { order: 1; }
+    .table--cards td[data-label="Cheapest match"] { order: 2; }
+    .table--cards td.td--check { order: 3; padding-top: var(--space-2); }
+    .table--cards td.td--remove { order: 4; padding-top: 0; }
+    /* Provenance is useful at home ("did Sam already add eggs?") and noise at
+       the store, so on a card it drops to a single quiet line with no caption. */
+    .table--cards td[data-label="Added / checked by"] { order: 5; }
+    .table--cards td[data-label="Added / checked by"]::before { content: none; }
+    .table--cards td[data-label="Added / checked by"] { font-size: var(--text-xs); }
+    /* A card whose provenance is just "?" renders a bare floating question mark
+       under the actions - pure noise on the page you read in a store. The column
+       stays on desktop, where an empty cell in a table reads as empty. */
+    .table--cards td.is-empty { display: none; }
+}
+
+@media (max-width: 420px) {
+    .who__label { display: none; }
+    .form-row > .field { flex-basis: 100%; }
+    .btn { padding: var(--space-2) var(--space-3); }
+}
+
+/* Safety net for a table that isn't wrapped in .table-wrap: it must still scroll
+   inside itself rather than dragging the whole page sideways. The wrapper is the
+   preferred form - it supplies the card border and keeps the sticky header
+   inside a scroll container - but a page that forgets it should degrade to this
+   rather than to a broken layout. This is the same trick the earlier mobile work
+   (#49) relied on, kept so removing it isn't a silent regression on any page. */
+@media (max-width: 720px) {
+    main > table, .card > table, form > table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+    }
+}
+
+/* Respect users who ask for less motion. Only the small hover/press transitions
+   exist, but they are cheap to disable and some people need them gone. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Print: someone will print the list to take to the store. Drop the chrome,
+   keep the data, and don't waste ink on backgrounds. */
+@media print {
+    .appbar, .btn, form, .alert__icon { display: none !important; }
+    body { background: #fff; color: #000; font-size: 11pt; }
+    .table-wrap { border: 0; box-shadow: none; overflow: visible; }
+    thead th { position: static; background: none; border-bottom: 1px solid #000; }
+    a { color: #000; text-decoration: none; }
+}

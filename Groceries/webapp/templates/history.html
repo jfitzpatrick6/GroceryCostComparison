@@ -1,29 +1,49 @@
 {% extends "base.html" %}
 {% block title %}Meal History - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Meal History</h1>
-<p>Recipes you've actually cooked (marked cooked on the planner), oldest last-made first.</p>
+<div class="page-head">
+    <h1>Meal history</h1>
+</div>
+<p class="subtitle">
+    Recipes you've actually cooked, marked from the planner. Oldest last-made first, so
+    "what did we have last time" is at the top.
+</p>
 
-<table>
-    <thead>
-        <tr><th>Recipe</th><th>Times cooked</th><th>Last cooked</th><th></th></tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
-            <td><a href="/recipes/{{ row.id }}">{{ row.name }}</a></td>
-            <td>{{ row.times_cooked }}</td>
-            <td>{{ row.last_cooked.strftime("%Y-%m-%d") if row.last_cooked else "" }}</td>
-            <td>
-                <form method="post" action="/history/readd" style="display:inline">
-                    <input type="hidden" name="recipe_id" value="{{ row.id }}">
-                    <button type="submit">Add to this week</button>
-                </form>
-            </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="4">Nothing marked cooked yet - mark a planned dinner as cooked on the <a href="/planner">planner</a>.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Recipe</th>
+                <th scope="col" class="num">Times cooked</th>
+                <th scope="col">Last cooked</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td><a class="item-name" href="/recipes/{{ row.id }}">{{ row.name }}</a></td>
+                <td class="num">{{ row.times_cooked }}</td>
+                <td class="muted">{{ row.last_cooked.strftime("%a %d %b %Y") if row.last_cooked else "&mdash;" }}</td>
+                <td class="num">
+                    <form method="post" action="/history/readd">
+                        <input type="hidden" name="recipe_id" value="{{ row.id }}">
+                        <button type="submit" class="btn btn--sm">Cook again</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">
+                <div class="empty">
+                    <div class="empty__glyph" aria-hidden="true">&#127860;</div>
+                    <div class="empty__title">Nothing cooked yet</div>
+                    <p>Mark a planned dinner as cooked on the <a href="/planner">planner</a> and
+                    it lands here &mdash; and depletes the pantry ingredients it used.</p>
+                    <a class="btn btn--primary" href="/planner">Open the planner</a>
+                </div>
+            </td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 {% endblock %}

@@ -1,41 +1,58 @@
 {% extends "base.html" %}
 {% block title %}Staples - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Staples</h1>
-<p>Products you've pinned, side by side with their latest price at each store.</p>
+<div class="page-head">
+    <h1>Staples</h1>
+</div>
+<p class="subtitle">
+    Products you've pinned, side by side with their latest price at each store. Useful for
+    the things you buy every week regardless of what's planned.
+</p>
 
-<table>
-    <thead>
-        <tr>
-            <th>Product</th>
-            <th>Store</th>
-            <th>Price</th>
-            <th>Size</th>
-            <th>Unit rate</th>
-            <th>Scraped</th>
-            <th></th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
-            <td>{{ row.product }}</td>
-            <td>{{ row.store }}</td>
-            <td>{% if row.price is not none %}${{ "%.2f"|format(row.price) }}{% else %}no recent scrape{% endif %}</td>
-            <td>{{ row.size or "" }}</td>
-            <td>{% if row.unit_price is not none %}${{ "%.2f"|format(row.unit_price) }} / {{ row.unit }}{% else %}-{% endif %}</td>
-            <td>{{ row.datetime.strftime("%Y-%m-%d %H:%M") if row.datetime else "" }}</td>
-            <td>
-                <form method="post" action="/staples/unpin" style="display:inline">
-                    <input type="hidden" name="product" value="{{ row.product }}">
-                    <input type="hidden" name="store" value="{{ row.store }}">
-                    <button type="submit">Unpin</button>
-                </form>
-            </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="7">Nothing pinned yet - pin items from <a href="/prices">Prices</a>.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Product</th>
+                <th scope="col">Store</th>
+                <th scope="col" class="num">Price</th>
+                <th scope="col">Size</th>
+                <th scope="col" class="num">Unit rate</th>
+                <th scope="col">Scraped</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td class="item-name">{{ row.product }}</td>
+                <td><span class="badge badge--store">{{ row.store }}</span></td>
+                <td class="num price">{% if row.price is not none %}${{ "%.2f"|format(row.price) }}{% else %}<span class="badge badge--warn">no recent scrape</span>{% endif %}</td>
+                <td class="muted small">{{ row.size or "" }}</td>
+                <td class="num rate">{% if row.unit_price is not none %}${{ "%.2f"|format(row.unit_price) }} / {{ row.unit }}{% else %}&mdash;{% endif %}</td>
+                <td class="faint small nowrap">{{ row.datetime.strftime("%d %b %H:%M") if row.datetime else "" }}</td>
+                <td class="num">
+                    <form method="post" action="/staples/unpin"
+                          onsubmit='return confirm({{ ("Unpin " ~ row.product ~ " at " ~ row.store ~ "?")|tojson }});'>
+                        <input type="hidden" name="product" value="{{ row.product }}">
+                        <input type="hidden" name="store" value="{{ row.store }}">
+                        <button type="submit" class="btn btn--sm btn--quiet">Unpin</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">
+                <div class="empty">
+                    <div class="empty__glyph" aria-hidden="true">&#128204;</div>
+                    <div class="empty__title">Nothing pinned yet</div>
+                    <p>Staples are the things you buy every week &mdash; milk, eggs, coffee,
+                    whatever yours are. Pin them from <a href="/prices">Prices</a> and this page
+                    becomes a one-glance cross-store comparison of just those.</p>
+                    <a class="btn btn--primary" href="/prices">Browse prices to pin</a>
+                </div>
+            </td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 {% endblock %}

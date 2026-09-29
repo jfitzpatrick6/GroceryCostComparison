@@ -1,49 +1,90 @@
 {% extends "base.html" %}
 {% block title %}Pantry - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Pantry</h1>
-<p>What's already in the house. Add/update to set the current amount (not add to it) - checking off a shopping-list item restocks automatically.</p>
+<div class="page-head">
+    <h1>Pantry</h1>
+</div>
+<p class="subtitle">
+    What's already in the house. Adding or updating <strong>sets</strong> the current amount
+    rather than adding to it, and checking off a shopping-list item restocks automatically.
+    Anything at or below its "low at" number is suggested on the grocery list.
+</p>
 
-<form method="post" action="/pantry/set">
-    <input type="text" name="name" placeholder="Item (e.g. chicken breast)" required>
-    <input type="text" name="amount" placeholder="Amount (e.g. 2)">
-    <input type="text" name="unit" placeholder="Unit (e.g. lb)">
-    <button type="submit">Add / Update</button>
-</form>
+<div class="stack">
+    <div class="card">
+        <div class="card__title">Add or update</div>
+        <form method="post" action="/pantry/set" class="form-row">
+            <div class="field">
+                <label class="label" for="p-name">Item</label>
+                <input type="text" id="p-name" name="name" placeholder="e.g. chicken breast" required autocomplete="off">
+            </div>
+            <div class="field">
+                <label class="label" for="p-amount">Amount</label>
+                <input type="text" id="p-amount" name="amount" placeholder="e.g. 2" inputmode="decimal" autocomplete="off">
+            </div>
+            <div class="field">
+                <label class="label" for="p-unit">Unit</label>
+                <input type="text" id="p-unit" name="unit" placeholder="e.g. lb" autocomplete="off">
+            </div>
+            <button type="submit" class="btn btn--primary">Save</button>
+        </form>
+    </div>
 
-<table>
-    <thead>
-        <tr><th>Item</th><th>Amount</th><th>Unit</th><th>Low at</th><th>Last updated by</th><th></th></tr>
-    </thead>
-    <tbody>
-        {% for item in items %}
-        <tr>
-            <td>
-                {{ item.name }}
-                {% if item.threshold is not none and item.amount is not none and item.amount|float <= item.threshold|float %}
-                <span style="color:#b30; font-size:0.85em;">low</span>
-                {% endif %}
-            </td>
-            <td>{{ item.amount if item.amount is not none else "" }}</td>
-            <td>{{ item.unit or "" }}</td>
-            <td>
-                <form method="post" action="/pantry/set_threshold" style="display:inline">
-                    <input type="hidden" name="id" value="{{ item.id }}">
-                    <input type="number" name="threshold" min="0" step="any" value="{{ item.threshold if item.threshold is not none else '' }}"
-                           placeholder="off" onchange="this.form.submit()" style="width:4em;">
-                </form>
-            </td>
-            <td style="color:#999">{{ item.updated_by or "?" }}</td>
-            <td>
-                <form method="post" action="/pantry/remove" style="display:inline">
-                    <input type="hidden" name="id" value="{{ item.id }}">
-                    <button type="submit">Remove</button>
-                </form>
-            </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="6">Pantry is empty.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">Item</th>
+                    <th scope="col" class="num">Amount</th>
+                    <th scope="col">Unit</th>
+                    <th scope="col" class="num">Low at</th>
+                    <th scope="col">Updated by</th>
+                    <th scope="col"><span class="sr-only">Actions</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                {% set is_low = item.threshold is not none and item.amount is not none and item.amount|float <= item.threshold|float %}
+                <tr{% if is_low %} class="is-low"{% endif %}>
+                    <td>
+                        <span class="item-name">{{ item.name }}</span>
+                        {% if is_low %}<span class="badge badge--warn">&#9888; low</span>{% endif %}
+                    </td>
+                    <td class="num">{{ item.amount if item.amount is not none else "&mdash;" }}</td>
+                    <td class="muted">{{ item.unit or "" }}</td>
+                    <td class="num">
+                        <form method="post" action="/pantry/set_threshold">
+                            <input type="hidden" name="id" value="{{ item.id }}">
+                            <label class="sr-only" for="thr-{{ item.id }}">Low-stock threshold for {{ item.name }}</label>
+                            <input class="num-input" type="number" id="thr-{{ item.id }}" name="threshold" min="0" step="any"
+                                   value="{{ item.threshold if item.threshold is not none else '' }}"
+                                   placeholder="off" onchange="this.form.submit()">
+                        </form>
+                    </td>
+                    <td class="faint small">{{ item.updated_by or "?" }}</td>
+                    <td class="num">
+                        <form method="post" action="/pantry/remove"
+                              onsubmit='return confirm({{ ("Remove " ~ item.name ~ " from the pantry?")|tojson }});'>
+                            <input type="hidden" name="id" value="{{ item.id }}">
+                            <button type="submit" class="btn btn--sm btn--quiet">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">
+                    <div class="empty">
+                        <div class="empty__glyph" aria-hidden="true">&#129383;</div>
+                        <div class="empty__title">The pantry is empty</div>
+                        <p>Add what's in the house and the planner will subtract it from the
+                        week's ingredients, so you only shop for what you actually need. Set a
+                        "low at" number and it will suggest a restock on your grocery list.</p>
+                        <p class="faint">Until there's something here, pantry-aware features stay
+                        quiet rather than guessing.</p>
+                    </div>
+                </td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
 {% endblock %}

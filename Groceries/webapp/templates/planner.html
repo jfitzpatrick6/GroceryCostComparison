@@ -1,136 +1,182 @@
 {% extends "base.html" %}
 {% block title %}Weekly Planner - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Weekly Planner</h1>
-<p>
-    <a href="/planner?week={{ prev_week }}&meal={{ meal }}">&laquo; Previous week</a>
-    &nbsp;|&nbsp;
-    Week of {{ week_start }}
-    &nbsp;|&nbsp;
-    <a href="/planner?week={{ next_week }}&meal={{ meal }}">Next week &raquo;</a>
+<div class="page-head">
+    <h1>Weekly planner</h1>
+    <nav class="weeknav" aria-label="Week">
+        <a class="btn btn--sm" href="/planner?week={{ prev_week }}&amp;meal={{ meal }}">&laquo; Prev</a>
+        <span class="badge">week of {{ week_start }}</span>
+        <a class="btn btn--sm" href="/planner?week={{ next_week }}&amp;meal={{ meal }}">Next &raquo;</a>
+    </nav>
+</div>
+<p class="subtitle">
+    Plan the week's dinners, then send their ingredients to the grocery list. Marking a
+    dinner as cooked records it in <a href="/history">history</a> and depletes the pantry
+    items it used.
 </p>
 
-<p>
+{# Meal tabs. The active one is marked by weight, a filled background and
+   aria-current - not by colour alone, and not by a bare <strong> with an
+   underline, which read as a heading rather than a selected tab. #}
+{# Not role="tablist": these links navigate to a different page, they do not
+   switch panels in place, and a tablist without aria-selected/aria-controls/
+   tabpanels and arrow-key handling is worse than no role at all. A nav with
+   aria-current says exactly what this is. #}
+<nav class="tabs" aria-label="Meal">
     {% for m in meals %}
-    {% if m == meal %}
-    <strong style="padding:4px 10px; border-bottom:2px solid #333;">{{ meal_labels[m] }}</strong>
-    {% else %}
-    <a href="/planner?week={{ week_start }}&meal={{ m }}" style="padding:4px 10px;">{{ meal_labels[m] }}</a>
-    {% endif %}
+    <a href="/planner?week={{ week_start }}&amp;meal={{ m }}"
+       class="tabs__tab{{ ' is-active' if m == meal else '' }}"
+       {% if m == meal %}aria-current="page"{% endif %}>{{ meal_labels[m] }}</a>
     {% endfor %}
-</p>
+</nav>
 
-<table>
-    <thead>
-        <tr><th>Day</th><th>{{ meal_labels[meal] }}</th><th>Cooked?</th></tr>
-    </thead>
-    <tbody>
-        {% for day in days %}
-        <tr>
-            <td>{{ day.name }} ({{ day.date }})</td>
-            <td>
-                {% if day.recipes or day.extras %}
-                <div style="margin-bottom:4px">
-                    {% for r in day.recipes %}
-                    <span style="display:inline-block; background:#eee; border-radius:12px; padding:2px 4px 2px 10px; margin:2px;">
-                        {{ r.recipe_name }}
-                        {% if r.recipe_servings %}
-                        <form method="post" action="/planner/set_servings" style="display:inline">
-                            <input type="hidden" name="week_start" value="{{ week_start }}">
-                            <input type="hidden" name="day_of_week" value="{{ day.index }}">
-                            <input type="hidden" name="recipe_id" value="{{ r.recipe_id }}">
-                            <input type="hidden" name="meal" value="{{ meal }}">
-                            <span style="color:#666">(serves
-                                <input type="number" name="servings" min="1" step="1"
+<div class="table-wrap">
+    <table class="planner">
+        <thead>
+            <tr>
+                <th scope="col">Day</th>
+                <th scope="col">{{ meal_labels[meal] }}</th>
+                <th scope="col">Cooked?</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for day in days %}
+            <tr{% if day.is_today %} class="is-today"{% endif %}>
+                <th scope="row" class="day-cell">
+                    <span class="day-name">{{ day.name }}</span>
+                    <span class="day-date">{{ day.date }}</span>
+                    {% if day.is_today %}<span class="badge badge--ok">today</span>{% endif %}
+                </th>
+                <td>
+                    {% if day.recipes or day.extras %}
+                    <div class="chips">
+                        {% for r in day.recipes %}
+                        <span class="chip">
+                            <span class="chip__name">{{ r.recipe_name }}</span>
+                            {% if r.recipe_servings %}
+                            <form method="post" action="/planner/set_servings" class="chip__form">
+                                <input type="hidden" name="week_start" value="{{ week_start }}">
+                                <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                                <input type="hidden" name="recipe_id" value="{{ r.recipe_id }}">
+                                <input type="hidden" name="meal" value="{{ meal }}">
+                                <label class="chip__label" for="sv-{{ day.index }}-{{ r.recipe_id }}">serves</label>
+                                <input class="chip__num" type="number" id="sv-{{ day.index }}-{{ r.recipe_id }}"
+                                       name="servings" min="1" step="1"
                                        value="{{ r.slot_servings or r.recipe_servings }}"
-                                       onchange="this.form.submit()"
-                                       style="width:2.5em; padding:0; border:none; border-bottom:1px solid #999; text-align:center;">
-                                {% if r.slot_servings and r.slot_servings != r.recipe_servings %}<span title="scaled from recipe's usual {{ r.recipe_servings }}">*</span>{% endif %})
-                            </span>
-                        </form>
-                        {% endif %}
-                        <form method="post" action="/planner/remove_recipe" style="display:inline">
-                            <input type="hidden" name="week_start" value="{{ week_start }}">
-                            <input type="hidden" name="day_of_week" value="{{ day.index }}">
-                            <input type="hidden" name="recipe_id" value="{{ r.recipe_id }}">
-                            <input type="hidden" name="meal" value="{{ meal }}">
-                            <button type="submit" title="Remove {{ r.recipe_name }}" style="border:none; background:none; cursor:pointer; color:#900; font-weight:bold;">&times;</button>
-                        </form>
-                    </span>
-                    {% endfor %}
-                    {% if day.extras %}
-                    <div>
+                                       onchange="this.form.submit()">
+                                {% if r.slot_servings and r.slot_servings != r.recipe_servings %}
+                                <span class="chip__flag" title="Scaled from this recipe's usual {{ r.recipe_servings }} servings">*</span>
+                                {% endif %}
+                            </form>
+                            {% endif %}
+                            <form method="post" action="/planner/remove_recipe" class="chip__form">
+                                <input type="hidden" name="week_start" value="{{ week_start }}">
+                                <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                                <input type="hidden" name="recipe_id" value="{{ r.recipe_id }}">
+                                <input type="hidden" name="meal" value="{{ meal }}">
+                                <button type="submit" class="chip__x" title="Remove {{ r.recipe_name }}"
+                                        aria-label="Remove {{ r.recipe_name }}">&times;</button>
+                            </form>
+                        </span>
+                        {% endfor %}
                         {% for e in day.extras %}
-                        <span style="display:inline-block; border:1px solid #bbb; border-radius:12px; padding:2px 4px 2px 10px; margin:2px;">
-                            {% if e.amount %}{{ e.amount }} {% endif %}{% if e.unit %}{{ e.unit }} {% endif %}{{ e.name }}
-                            <form method="post" action="/planner/remove_extra" style="display:inline">
+                        <span class="chip chip--extra">
+                            <span class="chip__name">{% if e.amount %}{{ e.amount }} {% endif %}{% if e.unit %}{{ e.unit }} {% endif %}{{ e.name }}</span>
+                            <form method="post" action="/planner/remove_extra" class="chip__form">
                                 <input type="hidden" name="week_start" value="{{ week_start }}">
                                 <input type="hidden" name="extra_id" value="{{ e.id }}">
                                 <input type="hidden" name="meal" value="{{ meal }}">
-                                <button type="submit" title="Remove {{ e.name }}" style="border:none; background:none; cursor:pointer; color:#900; font-weight:bold;">&times;</button>
+                                <button type="submit" class="chip__x" title="Remove {{ e.name }}"
+                                        aria-label="Remove {{ e.name }}">&times;</button>
                             </form>
                         </span>
                         {% endfor %}
                     </div>
                     {% endif %}
-                </div>
-                {% endif %}
-                <form method="post" action="/planner/set">
-                    <input type="hidden" name="week_start" value="{{ week_start }}">
-                    <input type="hidden" name="day_of_week" value="{{ day.index }}">
-                    <input type="hidden" name="meal" value="{{ meal }}">
-                    <select name="recipe_id" onchange="this.form.submit()">
-                        <option value="" selected>+ add a recipe</option>
-                        {% for r in all_recipes %}
-                        <option value="{{ r.id }}">{{ r.name }}</option>
-                        {% endfor %}
-                    </select>
-                    <noscript><button type="submit">Add</button></noscript>
-                </form>
-                <form method="post" action="/planner/add_extra">
-                    <input type="hidden" name="week_start" value="{{ week_start }}">
-                    <input type="hidden" name="day_of_week" value="{{ day.index }}">
-                    <input type="hidden" name="meal" value="{{ meal }}">
-                    <input type="text" name="line" placeholder="+ extra, e.g. 8 oz shredded cheese" style="width:14rem;">
-                    <button type="submit">Add</button>
-                </form>
-            </td>
-            <td>
-                {% if day.recipes %}
-                <form method="post" action="/planner/cook" style="display:inline">
-                    <input type="hidden" name="week_start" value="{{ week_start }}">
-                    <input type="hidden" name="day_of_week" value="{{ day.index }}">
-                    <input type="hidden" name="meal" value="{{ meal }}">
-                    <input type="hidden" name="cooked" value="{{ 0 if day.cooked else 1 }}">
-                    <button type="submit">{{ "Undo" if day.cooked else "Mark cooked" }}</button>
-                </form>
-                {% if day.cooked and day.cooked_by %}
-                <span style="color:#999">by {{ day.cooked_by }}</span>
-                {% endif %}
-                {% if day.cooked and day.used_tonight %}
-                <div style="margin-top:4px; font-size:0.9em; color:#555;">
-                    <em>Used tonight:</em>
-                    {% for u in day.used_tonight %}
-                    <form method="post" action="/planner/adjust_used" style="display:block">
+                    <div class="day-add">
+                        <form method="post" action="/planner/set" class="form-row">
+                            {# These three hidden fields are the entire identity of
+                               the slot being edited. The route reads them with
+                               request.form[...] unguarded, so a missing one is a
+                               400 before any database work - which is exactly how
+                               this regression behaved: picking a recipe from the
+                               dropdown did nothing but error. They were dropped in
+                               the restyle and are not decorative. #}
+                            <input type="hidden" name="week_start" value="{{ week_start }}">
+                            <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                            <input type="hidden" name="meal" value="{{ meal }}">
+                            <div class="field">
+                                <label class="sr-only" for="rec-{{ day.index }}">Add a recipe to {{ day.name }}</label>
+                                <select id="rec-{{ day.index }}" name="recipe_id" onchange="this.form.submit()">
+                                    <option value="" selected>+ add a recipe</option>
+                                    {% for r in all_recipes %}
+                                    <option value="{{ r.id }}">{{ r.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <noscript><button type="submit" class="btn btn--sm">Add</button></noscript>
+                        </form>
+                        <form method="post" action="/planner/add_extra" class="form-row">
+                            <input type="hidden" name="week_start" value="{{ week_start }}">
+                            <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                            <input type="hidden" name="meal" value="{{ meal }}">
+                            <div class="field">
+                                <label class="sr-only" for="extra-{{ day.index }}">Add an extra ingredient to {{ day.name }}</label>
+                                <input type="text" id="extra-{{ day.index }}" name="line" autocomplete="off"
+                                       placeholder="+ extra, e.g. 8 oz shredded cheese">
+                            </div>
+                            <button type="submit" class="btn btn--sm">Add</button>
+                        </form>
+                    </div>
+                </td>
+                <td>
+                    {% if day.recipes %}
+                    <form method="post" action="/planner/cook">
                         <input type="hidden" name="week_start" value="{{ week_start }}">
                         <input type="hidden" name="day_of_week" value="{{ day.index }}">
                         <input type="hidden" name="meal" value="{{ meal }}">
-                        <input type="hidden" name="ingredient_name" value="{{ u.ingredient_name }}">
-                        <input type="hidden" name="unit" value="{{ u.unit or '' }}">
-                        {{ u.ingredient_name }}
-                        <input type="number" name="used_amount" value="{{ u.used_amount }}" min="0" step="any"
-                               onchange="this.form.submit()" style="width:4em;">
-                        {{ u.unit or '' }}
+                        <input type="hidden" name="cooked" value="{{ 0 if day.cooked else 1 }}">
+                        <button type="submit" class="btn btn--sm {{ 'btn--primary' if not day.cooked else '' }}">
+                            {{ "Undo" if day.cooked else "Mark cooked" }}
+                        </button>
                     </form>
-                    {% endfor %}
-                </div>
-                {% endif %}
-                {% endif %}
-            </td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+                    {% if day.cooked and day.cooked_by %}
+                    <div class="faint tiny">by {{ day.cooked_by }}</div>
+                    {% endif %}
+                    {% if day.cooked and day.used_tonight %}
+                    {# The amounts actually used, editable after the fact, because a
+                       recipe's stated quantity is often not what went into the pan.
+                       Correcting this is what keeps the pantry honest (#48). #}
+                    <div class="used">
+                        <div class="used__title">Used tonight</div>
+                        {% for u in day.used_tonight %}
+                        <form method="post" action="/planner/adjust_used" class="used__row">
+                            <input type="hidden" name="week_start" value="{{ week_start }}">
+                            <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                            <input type="hidden" name="meal" value="{{ meal }}">
+                            <input type="hidden" name="ingredient_name" value="{{ u.ingredient_name }}">
+                            <input type="hidden" name="unit" value="{{ u.unit or '' }}">
+                            <label class="sr-only" for="used-{{ day.index }}-{{ loop.index }}">Amount of {{ u.ingredient_name }} used</label>
+                            <span class="used__name">{{ u.ingredient_name }}</span>
+                            <input class="chip__num" type="number" id="used-{{ day.index }}-{{ loop.index }}"
+                                   name="used_amount" value="{{ u.used_amount }}" min="0" step="any"
+                                   onchange="this.form.submit()">
+                            <span class="muted small">{{ u.unit or '' }}</span>
+                        </form>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% else %}
+                    <span class="faint small">&mdash;</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 
-<p><a href="/planner/ingredients?week={{ week_start }}">Ingredients needed this week &raquo;</a></p>
+<div class="row">
+    <a class="btn btn--primary" href="/planner/ingredients?week={{ week_start }}">Ingredients needed this week &raquo;</a>
+</div>
 {% endblock %}

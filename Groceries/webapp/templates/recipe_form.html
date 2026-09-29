@@ -1,26 +1,57 @@
 {% extends "base.html" %}
 {% block title %}{{ "Edit" if is_edit else "New" }} Recipe - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>{{ "Edit" if is_edit else "New" }} Recipe</h1>
+<a class="backlink" href="{{ '/recipes/' ~ recipe.id if is_edit and recipe else '/recipes' }}">&laquo; Back</a>
+<div class="page-head">
+    <h1>{{ "Edit" if is_edit else "New" }} recipe</h1>
+</div>
 
 {% if show_paste_import %}
-<details style="margin-bottom:1rem;">
-    <summary>Paste a whole recipe instead</summary>
-    <p style="color:#666">Paste the whole thing - title, ingredients, instructions, all of it. This fills in the fields below for you to check over, it doesn't save anything by itself.</p>
+<details class="card">
+    <summary class="card__title">Paste a whole recipe instead</summary>
+    <p class="small muted">
+        Paste the entire thing &mdash; title, ingredients, instructions, all of it. This fills in
+        the fields below for you to check over; it does not save anything by itself (#27).
+    </p>
     <form method="post" action="/recipes/parse_paste">
-        <textarea name="pasted" rows="10" style="width:100%" placeholder="Paste a recipe here..."></textarea>
-        <p><button type="submit">Fill in the form below</button></p>
+        <div class="field">
+            <label class="label" for="pasted">Recipe text</label>
+            <textarea id="pasted" name="pasted" rows="10" placeholder="Paste a recipe here&hellip;"></textarea>
+        </div>
+        <div class="row">
+            <button type="submit" class="btn">Fill in the form below</button>
+        </div>
     </form>
 </details>
 {% endif %}
 
-<form method="post" action="{{ form_action }}">
-    <p><label>Name<br><input type="text" name="name" value="{{ recipe.name if recipe else '' }}" required style="width:100%"></label></p>
-    <p><label>Servings<br><input type="number" name="servings" value="{{ recipe.servings if recipe else '' }}"></label></p>
-    <p><label>Notes<br><textarea name="notes" rows="3" style="width:100%">{{ recipe.notes if recipe else '' }}</textarea></label></p>
-    <p><label>Ingredients (one per line, e.g. "2 cups flour")<br>
-        <textarea name="ingredients" rows="10" style="width:100%">{{ ingredients_text }}</textarea>
-    </label></p>
-    <button type="submit">Save</button>
+<form method="post" action="{{ form_action }}" class="card stack">
+    <div class="field">
+        <label class="label" for="r-name">Name</label>
+        <input type="text" id="r-name" name="name" value="{{ recipe.name if recipe else '' }}" required autocomplete="off">
+    </div>
+
+    <div class="field">
+        <label class="label" for="r-servings">Servings</label>
+        <input type="number" id="r-servings" name="servings" min="1" step="1" value="{{ recipe.servings if recipe else '' }}">
+        <span class="hint">Used to scale ingredients when you plan a different number of servings.</span>
+    </div>
+
+    <div class="field">
+        <label class="label" for="r-notes">Notes</label>
+        <textarea id="r-notes" name="notes" rows="3">{{ recipe.notes if recipe else '' }}</textarea>
+    </div>
+
+    <div class="field">
+        <label class="label" for="r-ingredients">Ingredients</label>
+        <textarea id="r-ingredients" name="ingredients" rows="10"
+                  placeholder="2 cups flour&#10;1 lb ground beef&#10;a pinch of salt">{{ ingredients_text }}</textarea>
+        <span class="hint">One per line. Amounts and units are parsed out so the planner can scale them.</span>
+    </div>
+
+    <div class="row">
+        <button type="submit" class="btn btn--primary">Save recipe</button>
+        <a class="btn" href="{{ '/recipes/' ~ recipe.id if is_edit and recipe else '/recipes' }}">Cancel</a>
+    </div>
 </form>
 {% endblock %}

@@ -1,24 +1,45 @@
 {% extends "base.html" %}
 {% block title %}{{ recipe.name }} - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>{{ recipe.name }}</h1>
-{% if recipe.servings %}<p>Servings: {{ recipe.servings }}</p>{% endif %}
-{% if recipe.notes %}<p>{{ recipe.notes }}</p>{% endif %}
+<a class="backlink" href="/recipes">&laquo; All recipes</a>
+<div class="page-head">
+    <h1>{{ recipe.name }}</h1>
+    <div class="row">
+        {% if recipe.servings %}<span class="badge">Serves {{ recipe.servings }}</span>{% endif %}
+    </div>
+</div>
 
-<h2>Ingredients</h2>
-<ul>
-    {% for ing in ingredients %}
-    <li>{% if ing.amount %}{{ ing.amount }} {% endif %}{% if ing.unit %}{{ ing.unit }} {% endif %}{{ ing.name }}</li>
-    {% else %}
-    <li>No ingredients listed.</li>
-    {% endfor %}
-</ul>
+<div class="stack">
+    {% if recipe.notes %}
+    <div class="card">
+        <div class="card__title">Notes</div>
+        <p class="small">{{ recipe.notes }}</p>
+    </div>
+    {% endif %}
 
-<p>
-    <a href="/recipes/{{ recipe.id }}/edit">Edit</a>
-    &nbsp;
-    <form method="post" action="/recipes/{{ recipe.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this recipe?')">
-        <button type="submit">Delete</button>
-    </form>
-</p>
+    <div class="card">
+        <div class="card__title">Ingredients</div>
+        <ul class="ingredient-list">
+            {% for ing in ingredients %}
+            <li>
+                {% if ing.amount %}<span class="qty">{{ ing.amount }}</span> {% endif %}{% if ing.unit %}<span class="unit">{{ ing.unit }}</span> {% endif %}<span class="item-name">{{ ing.name }}</span>
+            </li>
+            {% else %}
+            <li class="muted">No ingredients listed.</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div class="row">
+        <a class="btn" href="/recipes/{{ recipe.id }}/edit">Edit</a>
+        <span class="spacer"></span>
+        {# Confirm before an irreversible delete: this cascades to the recipe's
+           ingredients and there is no undo in the UI. A one-tap destructive
+           action on a phone in a store is an accident waiting to happen. #}
+        <form method="post" action="/recipes/{{ recipe.id }}/delete"
+              onsubmit='return confirm({{ ("Delete " ~ recipe.name ~ " and its " ~ (ingredients|length)|string ~ " ingredient(s)? This cannot be undone.")|tojson }});'>
+            <button type="submit" class="btn btn--danger">Delete recipe</button>
+        </form>
+    </div>
+</div>
 {% endblock %}

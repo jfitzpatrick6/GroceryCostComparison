@@ -1,85 +1,132 @@
 {% extends "base.html" %}
 {% block title %}Where to Buy - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Where to Buy</h1>
-<p><a href="/list">&laquo; Back to list</a></p>
+<a class="backlink" href="/list">&laquo; Back to list</a>
+<div class="page-head">
+    <h1>Where to buy</h1>
+    {% if per_item %}<span class="badge badge--muted">{{ per_item|length }} item(s) priced</span>{% endif %}
+</div>
+<p class="subtitle">
+    The cheapest store for each unchecked item, and whether one trip beats splitting
+    across several. &ldquo;Cost to cover&rdquo; accounts for buying whole packages &mdash; needing
+    2&nbsp;lb from 1.5&nbsp;lb packs means buying two.
+</p>
 
-{# This page is the one that tells the household where to spend money, so it is
-   the one place where the age of the data is not optional context (#62). It was
-   also the only price-derived page that showed no date at all - /prices and
-   /staples both had a datetime column while this one did not. #}
+{# The page that tells the household where to spend money, so the age of the data
+   behind it is not optional context (#62). It was also the only price-derived page
+   that showed no date at all. #}
 {% include "_price_freshness.html" %}
 
-<h2>Cheapest store per item</h2>
-<p style="color:#666">"Cost to cover" accounts for needing to buy whole packages when your list has a quantity (e.g. needing 2 lb from 1.5 lb packages means buying 2 of them) - it's not just the cheapest price tag when that happens.</p>
-<table>
-    <thead>
-        <tr><th>Item</th><th>Qty</th><th>Matched product</th><th>Store</th><th>Price</th><th>Size</th><th>Unit rate</th><th>Cost to cover</th></tr>
-    </thead>
-    <tbody>
-        {% for p in per_item %}
-        <tr>
-            <td>{{ p.item.name }}</td>
-            <td>{{ p.item.qty or "" }}</td>
-            {# The product behind the price (#97). This page tells a household
-               where to spend money, so it is the last place a wrong match should
-               be invisible - "Item" is the user's own typed text, and before this
-               column the retailer's actual product name appeared nowhere on the
-               page. Measured on the live catalog, "bacon" resolves to "TOPS Bacon
-               Chips" and "milk" ties "Goya Coconut Milk" with real milk; the
-               cheapest-of-a-tie rule then picks whichever wrong product costs
-               least. Naming it is what makes that catchable. #}
-            <td>
-                {{ p.cheapest.product }}
-                {% if p.cheapest.match_score is defined and p.cheapest.match_score < low_confidence %}
-                <span style="display:block;color:#8a6d3b;font-size:0.85rem"
-                      title="Match score {{ '%.2f'|format(p.cheapest.match_score) }} of 1.00; below the {{ low_confidence }} confidence threshold">
-                    &#9888; not sure this is what you meant
-                </span>
-                {% endif %}
-            </td>
-            <td>{{ p.cheapest.store }}</td>
-            <td>${{ "%.2f"|format(p.cheapest.price) }}</td>
-            <td>{{ p.cheapest.size }}</td>
-            <td>{% if p.cheapest.unit_price is not none %}${{ "%.2f"|format(p.cheapest.unit_price) }} / {{ p.cheapest.unit }}{% else %}-{% endif %}</td>
-            <td>
-                {% if p.cheapest.packages_needed > 1 %}
-                    {{ p.cheapest.packages_needed }} &times; ${{ "%.2f"|format(p.cheapest.price) }} = ${{ "%.2f"|format(p.cheapest.total_cost) }}
-                {% else %}
+{% if per_item %}
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Item</th>
+                <th scope="col">Qty</th>
+                <th scope="col">Matched product</th>
+                <th scope="col">Store</th>
+                <th scope="col" class="num">Price</th>
+                <th scope="col">Size</th>
+                <th scope="col" class="num">Unit rate</th>
+                <th scope="col" class="num">Cost to cover</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in per_item %}
+            <tr>
+                <td><span class="item-name">{{ p.item.name }}</span></td>
+                <td class="muted">{{ p.item.qty or "" }}</td>
+                {# The product behind the price (#97). "Item" is the user's own typed
+                   text, so before this column the retailer's actual product name
+                   appeared nowhere on the page - and "bacon" resolving to "TOPS
+                   Bacon Chips" was invisible. #}
+                <td>
+                    <span class="match-product">{{ p.cheapest.product }}</span>
+                    {% if p.cheapest.match_score is defined and p.cheapest.match_score < low_confidence %}
+                    <span class="unsure"
+                          title="Match score {{ '%.2f'|format(p.cheapest.match_score) }} of 1.00; below the {{ low_confidence }} confidence threshold">
+                        &#9888; not sure this is what you meant
+                    </span>
+                    {% endif %}
+                </td>
+                <td><span class="badge badge--store">{{ p.cheapest.store }}</span></td>
+                <td class="num price">${{ "%.2f"|format(p.cheapest.price) }}</td>
+                <td class="muted small">{{ p.cheapest.size }}</td>
+                <td class="num rate">{% if p.cheapest.unit_price is not none %}${{ "%.2f"|format(p.cheapest.unit_price) }} / {{ p.cheapest.unit }}{% else %}&mdash;{% endif %}</td>
+                <td class="num price">
+                    {% if p.cheapest.packages_needed > 1 %}
+                        <span class="rate">{{ p.cheapest.packages_needed }} &times; ${{ "%.2f"|format(p.cheapest.price) }} =</span>
+                    {% endif %}
                     ${{ "%.2f"|format(p.cheapest.total_cost) }}
-                {% endif %}
-            </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="8">No matched items on your list yet.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card">
+    <div class="empty">
+        <div class="empty__glyph" aria-hidden="true">&#128722;</div>
+        <div class="empty__title">Nothing to price</div>
+        <p>Every item on your <a href="/list">grocery list</a> is either checked off or
+        unmatched. Add an unchecked item and this page will compare it across stores.</p>
+        <a class="btn btn--primary" href="/list">Go to the grocery list</a>
+    </div>
+</div>
+{% endif %}
 
 {% if unmatched %}
-<p><strong>No price match found for:</strong> {{ unmatched|map(attribute='name')|join(', ') }}</p>
+<div class="alert alert--quiet">
+    <span class="alert__icon" aria-hidden="true">&#8505;</span>
+    <div class="alert__body">
+        <div class="alert__title">No price match found for</div>
+        {{ unmatched|map(attribute='name')|join(', ') }}
+        <div class="alert__note">
+            These are excluded from the totals below, so a total here is the cost of what
+            could be priced &mdash; not necessarily the whole trip. Try naming them the way the
+            store does, or look them up on <a href="/prices">Prices</a>.
+        </div>
+    </div>
+</div>
 {% endif %}
 
 {% if split_total is not none %}
-<h2>Trip total comparison</h2>
-<table>
-    <thead>
-        <tr><th>Option</th><th>Covers</th><th>Total</th></tr>
-    </thead>
-    <tbody>
-        <tr>
-            <td><strong>Split across cheapest stores</strong></td>
-            <td>{{ per_item|length }} / {{ per_item|length }}</td>
-            <td>${{ "%.2f"|format(split_total) }}</td>
-        </tr>
-        {% for s in store_totals %}
-        <tr>
-            <td>Shop only at {{ s.store }}</td>
-            <td>{{ s.covered }} / {{ s.of_total }}{% if not s.covers_all %} (missing some items){% endif %}</td>
-            <td>${{ "%.2f"|format(s.total) }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+<h2>Trip total</h2>
+{# The single most-read number on the most decision-relevant page, so it gets its
+   own visual treatment rather than another table row. The cheapest option that
+   covers everything is marked; an option that is cheaper only because it is
+   missing items must not look like the winner. #}
+{% set ns = namespace(best_total=none) %}
+{% for s in store_totals %}
+    {% if s.covers_all and (ns.best_total is none or s.total < ns.best_total) %}{% set ns.best_total = s.total %}{% endif %}
+{% endfor %}
+{% if ns.best_total is none or split_total < ns.best_total %}{% set best_kind = 'split' %}{% else %}{% set best_kind = 'single' %}{% endif %}
+<div class="totals">
+    <div class="totals__item{{ ' is-best' if best_kind == 'split' else '' }}">
+        <div class="totals__label">Split across cheapest stores</div>
+        <div class="totals__value">${{ "%.2f"|format(split_total) }}</div>
+        <div class="totals__note">
+            Covers {{ per_item|length }} / {{ per_item|length }} items
+            {% if best_kind == 'split' %}&middot; <strong>cheapest option</strong>{% endif %}
+        </div>
+    </div>
+    {% for s in store_totals %}
+    <div class="totals__item{{ ' is-best' if best_kind == 'single' and s.covers_all and s.total == ns.best_total else '' }}">
+        <div class="totals__label">Shop only at {{ s.store }}</div>
+        <div class="totals__value">${{ "%.2f"|format(s.total) }}</div>
+        <div class="totals__note">
+            Covers {{ s.covered }} / {{ s.of_total }} items
+            {% if not s.covers_all %}&middot; <span class="badge badge--warn">missing {{ s.of_total - s.covered }}</span>
+            {% elif best_kind == 'single' and s.total == ns.best_total %}&middot; <strong>cheapest option</strong>{% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+<p class="hint">
+    Totals cover matched, unchecked items only. A store marked &ldquo;missing&rdquo; cannot
+    supply everything on the list, so its total is not comparable with the others.
+</p>
 {% endif %}
 {% endblock %}

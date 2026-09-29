@@ -1,96 +1,132 @@
 {% extends "base.html" %}
 {% block title %}Grocery List - Grocery Cost Comparison{% endblock %}
 {% block content %}
-<h1>Grocery List</h1>
+<div class="page-head">
+    <h1>Grocery list</h1>
+    <a class="btn btn--primary" href="/list/where-to-buy">Where to buy &raquo;</a>
+</div>
+<p class="subtitle">
+    Add what you need, then open <strong>where to buy</strong> to see the cheapest store for
+    the lot. Checking an item off restocks the pantry automatically if it matches one.
+</p>
 
 {% if running_low %}
-<div style="background:#fff8e1; border:1px solid #e0c060; border-radius:6px; padding:0.6rem 1rem; margin-bottom:1rem;">
-    <strong>Running low</strong>
-    {% for r in running_low %}
-    <div style="margin-top:4px;">
-        {{ r.name }} - {{ r.amount|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %} left
-        (you wanted {{ r.threshold|float|round(2) }}+)
-        {% if r.already_on_list %}
-        <span style="color:#999">Already on list</span>
-        {% else %}
-        <form method="post" action="/list/add" style="display:inline">
-            <input type="hidden" name="name" value="{{ r.name }}">
-            <input type="hidden" name="qty" value="{{ r.threshold|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %}">
-            <button type="submit">Add {{ r.threshold|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %}</button>
-        </form>
-        {% endif %}
+<div class="alert alert--warning">
+    <span class="alert__icon" aria-hidden="true">&#9888;</span>
+    <div class="alert__body">
+        <div class="alert__title">Running low</div>
+        <ul class="low-list">
+            {% for r in running_low %}
+            <li>
+                <span class="item-name">{{ r.name }}</span>
+                <span class="muted small">{{ r.amount|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %} left, you wanted {{ r.threshold|float|round(2) }}+</span>
+                {% if r.already_on_list %}
+                    <span class="badge badge--muted">already on list</span>
+                {% else %}
+                <form method="post" action="/list/add">
+                    <input type="hidden" name="name" value="{{ r.name }}">
+                    <input type="hidden" name="qty" value="{{ r.threshold|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %}">
+                    <button type="submit" class="btn btn--sm">Add {{ r.threshold|float|round(2) }}{% if r.unit %} {{ r.unit }}{% endif %}</button>
+                </form>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
     </div>
-    {% endfor %}
 </div>
 {% endif %}
 
-<form method="post" action="/list/add">
-    <input type="text" name="name" placeholder="Item (e.g. chicken breast)" required>
-    <input type="text" name="qty" placeholder="Qty (optional, e.g. 2 lb)">
-    <button type="submit">Add</button>
-</form>
+<div class="card">
+    <form method="post" action="/list/add" class="form-row">
+        <div class="field">
+            <label class="label" for="li-name">Item</label>
+            <input type="text" id="li-name" name="name" placeholder="e.g. chicken breast" required autocomplete="off">
+        </div>
+        <div class="field">
+            <label class="label" for="li-qty">Quantity <span class="hint">(optional)</span></label>
+            <input type="text" id="li-qty" name="qty" placeholder="e.g. 2 lb" autocomplete="off">
+        </div>
+        <button type="submit" class="btn btn--primary">Add</button>
+    </form>
+</div>
 
-<p><a href="/list/where-to-buy">Where to buy &raquo;</a></p>
-
-<table>
-    <thead>
-        <tr>
-            <th></th>
-            <th>Item</th>
-            <th>Qty</th>
-            <th>Cheapest match</th>
-            <th>Added / checked by</th>
-            <th></th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for item in items %}
-        <tr style="{% if item.checked %}text-decoration: line-through; color: #999;{% endif %}">
-            <td>
-                <form method="post" action="/list/check" style="display:inline">
-                    <input type="hidden" name="id" value="{{ item.id }}">
-                    <input type="hidden" name="checked" value="{{ 0 if item.checked else 1 }}">
-                    <button type="submit">{{ "Undo" if item.checked else "Check off" }}</button>
-                </form>
-            </td>
-            <td>{{ item.name }}</td>
-            <td>{{ item.qty or "" }}</td>
-            <td>
-                {% if item.match %}
-                    {# Name the product that actually matched, not just a price
-                       (#97). Without this, "bacon" priced from "TOPS Bacon Chips"
-                       is indistinguishable from a correct answer. The page
-                       already said "no match" when there was none; it said
-                       nothing when the match was wrong, which is worse, because
-                       a wrong match looks like a right one. #}
-                    <span style="display:block">{{ item.match.product }}</span>
-                    <span style="color:#666">
-                        {{ item.match.store }}: ${{ "%.2f"|format(item.match.price) }}
-                        {% if item.match.unit_price is not none %}(${{ "%.2f"|format(item.match.unit_price) }} / {{ item.match.unit }}){% endif %}
-                    </span>
-                    {% if item.match.match_score is defined and item.match.match_score < low_confidence %}
-                    <span style="display:block;color:#8a6d3b;font-size:0.85rem"
-                          title="Match score {{ '%.2f'|format(item.match.match_score) }} of 1.00; below the {{ low_confidence }} confidence threshold">
-                        &#9888; not sure this is what you meant
-                    </span>
+<div class="table-wrap table--cards">
+    <table>
+        <thead>
+            <tr>
+                <th scope="col"><span class="sr-only">Check off</span></th>
+                <th scope="col">Item</th>
+                <th scope="col">Qty</th>
+                <th scope="col">Cheapest match</th>
+                <th scope="col">Added / checked by</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr{% if item.checked %} class="is-checked"{% endif %}>
+                {# data-label is what the mobile card layout prints above each
+                   value. On a phone at the store this page is the whole point of
+                   the app, and six columns at 390px put the match - the price and
+                   the warning - off-screen behind a horizontal scroll. Stacking
+                   each row into a card keeps every field visible without
+                   scrolling sideways. Desktop ignores the attributes entirely. #}
+                <td data-label="" class="td--check">
+                    <span class="print-box" aria-hidden="true"></span>
+                    <form method="post" action="/list/check">
+                        <input type="hidden" name="id" value="{{ item.id }}">
+                        <input type="hidden" name="checked" value="{{ 0 if item.checked else 1 }}">
+                        <button type="submit" class="btn btn--sm {{ '' if item.checked else 'btn--primary' }}">
+                            {{ "Undo" if item.checked else "Check off" }}
+                        </button>
+                    </form>
+                </td>
+                <td data-label="Item" class="card-title-cell"><span class="item-name">{{ item.name }}</span>{% if item.qty %} <span class="muted">&middot; {{ item.qty }}</span>{% endif %}</td>
+                <td data-label="Qty" class="muted">{{ item.qty or "" }}</td>
+                <td data-label="Cheapest match">
+                    {% if item.match %}
+                        {# Name the product that actually matched, not just a price
+                           (#97). Without this, "bacon" priced from "TOPS Bacon Chips"
+                           is indistinguishable from a correct answer. The page
+                           already said "no match" when there was none; it said
+                           nothing when the match was wrong, which is worse. #}
+                        <span class="item-name match-product">{{ item.match.product }}</span>
+                        <span class="badge badge--store">{{ item.match.store }}</span>
+                        <span class="price">${{ "%.2f"|format(item.match.price) }}</span>
+                        {% if item.match.unit_price is not none %}<span class="rate">${{ "%.2f"|format(item.match.unit_price) }} / {{ item.match.unit }}</span>{% endif %}
+                        {% if item.match.match_score is defined and item.match.match_score < low_confidence %}
+                        <span class="unsure"
+                              title="Match score {{ '%.2f'|format(item.match.match_score) }} of 1.00; below the {{ low_confidence }} confidence threshold">
+                            &#9888; not sure this is what you meant
+                        </span>
+                        {% endif %}
+                    {% else %}
+                        <span class="badge badge--muted">no match</span>
                     {% endif %}
-                {% else %}
-                    <span style="color:#999">no match</span>
-                {% endif %}
-            </td>
-            <td style="color:#999">
-                {{ item.added_by or "?" }}{% if item.checked %} / {{ item.checked_by or "?" }}{% endif %}
-            </td>
-            <td>
-                <form method="post" action="/list/remove" style="display:inline">
-                    <input type="hidden" name="id" value="{{ item.id }}">
-                    <button type="submit">Remove</button>
-                </form>
-            </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="6">Nothing on the list yet.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+                </td>
+                <td data-label="Added / checked by" class="faint small{% if not item.added_by and not item.checked_by %} is-empty{% endif %}">
+                    {{ item.added_by or "?" }}{% if item.checked %} / {{ item.checked_by or "?" }}{% endif %}
+                </td>
+                <td data-label="" class="num td--remove">
+                    <form method="post" action="/list/remove"
+                          onsubmit='return confirm({{ ("Remove " ~ item.name ~ " from the list?")|tojson }});'>
+                        <input type="hidden" name="id" value="{{ item.id }}">
+                        <button type="submit" class="btn btn--sm btn--quiet">Remove</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">
+                <div class="empty">
+                    <div class="empty__glyph" aria-hidden="true">&#128722;</div>
+                    <div class="empty__title">Nothing on the list yet</div>
+                    <p>Add items above, or push a whole week of planned dinners at once from the
+                    planner.</p>
+                    <a class="btn btn--primary" href="/planner/ingredients">See this week's ingredients</a>
+                </div>
+            </td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 {% endblock %}

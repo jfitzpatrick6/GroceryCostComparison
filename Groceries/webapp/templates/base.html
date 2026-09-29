@@ -3,57 +3,87 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {# Lets the browser pick correct form-control and scrollbar colours before
+       the stylesheet lands, so there is no white flash in dark mode. #}
+    <meta name="color-scheme" content="light dark">
     <title>{% block title %}Grocery Cost Comparison{% endblock %}</title>
-    <style>
-        body { font-family: sans-serif; margin: 2rem; max-width: 60rem; }
-        nav a { margin-right: 1rem; }
-        table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
-        th, td { text-align: left; padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; }
-        th a { text-decoration: none; }
-        input[type=text] { padding: 0.4rem; width: 20rem; max-width: 100%; }
-        /* Real usage is mostly a phone at the store or checking "what's for
-           dinner" (#49), not the laptop planning happened on - bigger tap
-           targets and no page-wide horizontal scroll, without restyling
-           every page into cards (deliberately not a redesign). */
-        button, input[type=submit], select, input[type=number] {
-            min-height: 2.75rem; font-size: 1rem; padding: 0.4rem 0.6rem;
-        }
-        input[type=text] { min-height: 2.75rem; font-size: 1rem; }
-        @media (max-width: 600px) {
-            body { margin: 0.75rem; }
-            nav a { margin-right: 0.6rem; display: inline-block; padding: 0.3rem 0; }
-            /* Data tables can scroll within themselves; the page never
-               should - table becomes its own horizontally-scrollable block
-               while thead/tbody/tr/td keep their table layout, so no
-               per-page markup changes are needed to get this. */
-            table { display: block; overflow-x: auto; white-space: nowrap; }
-        }
-    </style>
+    {# One stylesheet, no build step, no CDN (#101). Self-hosting is a
+       requirement rather than a preference: this app runs on a LAN that may have
+       no internet route at all, so a webfont or icon library from a CDN would
+       turn "offline" into "unstyled". System font stack and text glyphs only. #}
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+    {% block head %}{% endblock %}
 </head>
 <body>
-    <nav>
-        <a href="/">Home</a>
-        <a href="/prices">Prices</a>
-        <a href="/staples">Staples</a>
-        <a href="/list">Grocery List</a>
-        <a href="/recipes">Recipes</a>
-        <a href="/planner">Planner</a>
-        <a href="/pantry">Pantry</a>
-        <a href="/history">History</a>
-        <a href="/profiles">Profiles</a>
-        <span style="float:right">
-            <form method="post" action="/profiles/switch" style="display:inline">
-                <select name="name" onchange="this.form.submit()">
-                    <option value="">-- who are you? --</option>
-                    {% for n in all_profile_names %}
-                    <option value="{{ n }}" {% if n == active_profile_name %}selected{% endif %}>{{ n }}</option>
-                    {% endfor %}
-                </select>
-                <noscript><button type="submit">Switch</button></noscript>
-            </form>
-        </span>
-    </nav>
-    <hr>
-    {% block content %}{% endblock %}
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="appbar">
+        <div class="appbar__inner">
+            <a class="brand" href="/">
+                <span class="brand__mark" aria-hidden="true">&#127813;</span>
+                <span>Basket</span>
+            </a>
+
+            {# A horizontally scrolling pill row rather than nine wrapped links.
+               Wrapped, they took four lines on a phone and pushed all content
+               below the fold - the opposite of useful when you are standing in an
+               aisle checking one price (#49). The current page is marked with
+               weight plus an underline bar via aria-current, not colour alone, so
+               it survives colour-vision deficiency and is exposed to screen
+               readers. #}
+            <nav class="nav" aria-label="Main">
+                {% set nav = [
+                    ('/', 'Home'),
+                    ('/prices', 'Prices'),
+                    ('/staples', 'Staples'),
+                    ('/list', 'Grocery List'),
+                    ('/recipes', 'Recipes'),
+                    ('/planner', 'Planner'),
+                    ('/pantry', 'Pantry'),
+                    ('/history', 'History'),
+                    ('/profiles', 'Profiles')
+                ] %}
+                {% for href, label in nav %}
+                <a href="{{ href }}"{% if request.path == href %} aria-current="page"{% endif %}>{{ label }}</a>
+                {% endfor %}
+            </nav>
+
+            <div class="who">
+                <form method="post" action="/profiles/switch" class="row row--tight">
+                    <label class="who__label" for="profile-switch">Who</label>
+                    <select id="profile-switch" name="name" onchange="this.form.submit()">
+                        <option value="">nobody</option>
+                        {% for n in all_profile_names %}
+                        <option value="{{ n }}" {% if n == active_profile_name %}selected{% endif %}>{{ n }}</option>
+                        {% endfor %}
+                    </select>
+                    <noscript><button type="submit" class="btn btn--sm">Switch</button></noscript>
+                </form>
+            </div>
+        </div>
+    </header>
+
+    <main id="main">
+        {# Flash region (#68). Renders nothing at all when there are no messages,
+           so shipping it now costs nothing and means the styling is already
+           right when routes start flashing. Flask's default category is
+           "message", which maps to the neutral alert; "error" is remapped to the
+           danger variant because that is Flask's convention and it reads better
+           than a category named "message" for a failure. #}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+            <div class="stack">
+                {% for category, message in messages %}
+                {% set variant = 'danger' if category in ('error', 'danger') else ('warning' if category == 'warning' else ('ok' if category in ('success', 'ok') else 'info')) %}
+                <div class="alert alert--{{ variant }}" role="status">
+                    <span class="alert__icon" aria-hidden="true">{% if variant == 'danger' or variant == 'warning' %}&#9888;{% elif variant == 'ok' %}&#10003;{% else %}&#8505;{% endif %}</span>
+                    <div class="alert__body">{{ message }}</div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
 </body>
 </html>

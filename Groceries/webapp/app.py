@@ -1235,10 +1235,19 @@ def planner():
         conn.close()
 
     days = []
+    today = datetime.date.today()
     for i in range(7):
         recipes = assigned.get(i, [])
+        day_date = week_start + datetime.timedelta(days=i)
         days.append({
-            "index": i, "name": DAY_NAMES[i], "date": week_start + datetime.timedelta(days=i),
+            "index": i, "name": DAY_NAMES[i], "date": day_date,
+            # Display-only flag for the planner to mark today's row (#101).
+            # Computed once outside the loop and derived from the same
+            # week_start the rest of the page uses, so a week viewed in the
+            # past or future simply has no row marked. It changes no query and
+            # no behaviour - it exists because a seven-day grid with no anchor
+            # to "now" makes you count columns to find today.
+            "is_today": day_date == today,
             "recipes": recipes,
             "extras": assigned_extras.get(i, []),
             # All recipes in a slot get cooked/depleted together as one
