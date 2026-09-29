@@ -62,7 +62,8 @@ MIGRATIONS = [
      _clear_first_match_conversions),
     (3, "clear USDA conversions cached under the wrong food identity (#123)",
      _clear_misidentified_conversions),
-    (4, "clear USDA conversions cached for the chocolate aliases (#126)", _clear_chocolate_conversions),
+    (4, "clear USDA conversions cached for the chocolate aliases (#126)",
+     _clear_chocolate_conversions),
 ]
 
 
