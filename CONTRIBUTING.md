@@ -219,46 +219,42 @@ utility module for a one-time operation.
 
 ## 8. Database and schema
 
-**The current state is known-bad and is being fixed — do not make it worse.**
+The webapp's tables change in **exactly one place**: `Groceries/webapp/migrations.py`,
+applied **once at container startup** by `init_schema.py`, before gunicorn serves
+anything (#66, building on #82). A `schema_version` table records which numbered
+migrations a database has had; missing ones are applied in order, each in the same
+transaction as its version row, under an advisory lock. No request handler runs
+DDL, and `test_migrations.py` fails the build if one does.
 
-The webapp's own tables are now created **once at container startup** by
-`init_schema.py`, which calls `ensure_app_schema()` before gunicorn serves
-anything (#82). That is the correct place, and it fixed a real first-deploy
-failure: schema creation used to be scattered through request handlers, so
-whether a table existed depended on which URL someone opened first — three
-recipe routes 500'd on an empty database because they provisioned nothing.
+Migration 1 is the baseline: the `ensure_*_table()` functions as they stood at #66.
+They were written to be idempotent against every schema they had met, which is what
+made it safe to stamp existing databases as version 1 - verified on a restored copy
+of the household database (row counts identical; the only changes were
+`schema_version` and columns that deployment was already missing).
 
-What has *not* been removed yet is the legacy behaviour underneath: ad-hoc
-`CREATE TABLE IF NOT EXISTS` and `ALTER TABLE` calls still sit in nine
-`ensure_*_table()` functions at roughly 32 call sites inside route handlers (47
-occurrences of `ensure_` in total, including the nine definitions — grep to
-recheck rather than trusting a number in a document), and they still execute on
-nearly every request. They are now semantic no-ops, but **not free**: measured on
-postgres:16 by holding a transaction open and reading `pg_locks` from another
-session, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes an
-**`AccessExclusiveLock`** on the relation *even when the column already exists
-and nothing changes*. `CREATE TABLE IF NOT EXISTS` against an existing table
-takes **no lock at all** (Postgres notices and skips it), so the cost is the
-`ALTER`s, not the `CREATE`s — app.py has about ten of them. One call site
-(`inject_profile_switcher`) is a Flask `@app.context_processor`, so *every page
-render* runs DDL and a `COMMIT`, and one path drops and re-adds a constraint on
-`meal_plan_slots` implicitly. Removing those call sites is #66.
+Before #66, those functions ran from ~37 request handlers and a context processor,
+so every page view executed `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` - which takes
+an **`AccessExclusiveLock` even when the column already exists** (measured on
+postgres:16 by holding a transaction open and reading `pg_locks`). The same was true
+of `collector.py`, whose DDL ran inside the nightly insert transaction and so held
+that lock for the whole insert: measured, a webapp read of `grocery_prices_latest`
+blocked 2.08 s of a 2.1 s, 20,000-row insert. `collector.py` now checks whether its
+schema is current and runs no DDL on routine scrapes.
 
-Rules while that stands:
+Rules:
 
-- **Never add a new `ensure_*_table()` call site in a request handler.** If you
-  need a schema change, say so in the PR and coordinate it with the migrations
-  issue (#66). (`ensure_app_schema()` calling the nine helpers is the sanctioned
-  exception — that's the one ordered place schema is declared, not a request
-  handler. The rule below is what that means in practice.)
-- **A new table goes in `ensure_app_schema()`**, not in a route. That function is
-  the single ordered place the webapp's schema is declared, and
-  `test_app_schema.py` asserts every table any route queries is either created
-  there or explicitly listed as owned by something else — so a route added
-  against a table nobody creates fails in CI instead of 500ing on the next fresh
-  deploy. Add the table to that test's `EXPECTED_TABLES` too.
-- **Never write a destructive migration** (`DROP COLUMN`, `DROP CONSTRAINT`,
-  `ALTER TYPE`) as an implicit side effect of a request handler.
+- **A schema change is a new migration.** Append `(N, "description", function)` to
+  `MIGRATIONS` in `migrations.py`. **Do not edit an `ensure_*` function to change the
+  schema** - a database already at version 1 will never run it again, so the edit
+  would only reach fresh deploys and the two would silently diverge.
+- **Never call an `ensure_*` function, or execute DDL, from a route, a context
+  processor or a helper.** `test_migrations.py` scans `app.py` for both.
+- **A new table still gets listed** in `test_app_schema.py`'s `EXPECTED_TABLES`,
+  which asserts every table a route queries is created by the schema or explicitly
+  owned by something else.
+- **Destructive steps** (`DROP COLUMN`, `DROP CONSTRAINT`, `ALTER TYPE`) live only
+  in a numbered migration, called out in the PR description, and only once the
+  nightly backup (#60) has a dump from before it.
 - Schema for scraped prices is owned by `collector.py`; app tables are owned by
   the webapp. `price_data_available()` exists because the webapp must tolerate a
   database the scraper hasn't populated yet — preserve that graceful degradation

@@ -99,6 +99,101 @@ def _numeric_rate(price, size):
         return None, None
 
 
+def _price_schema_current(cur):
+    """True when grocery_prices, its columns, the view and the index all exist
+    with price already NUMERIC - i.e. every routine scrape after the first.
+
+    Why this check exists (#66): the DDL below used to run on EVERY scrape, in
+    the same transaction as the ~23,000 inserts. ADD COLUMN, ALTER COLUMN TYPE
+    and DROP VIEW take ACCESS EXCLUSIVE locks even when they change nothing
+    (measured, CONTRIBUTING §8), and those locks are held until commit - so every
+    price page in the webapp blocked for the whole insert, nightly. Now routine
+    scrapes run no DDL at all, and when DDL is needed it commits on its own first.
+    """
+    cur.execute("""
+        SELECT to_regclass('grocery_prices') IS NOT NULL,
+               to_regclass('grocery_prices_latest') IS NOT NULL,
+               to_regclass('idx_grocery_prices_product_store_datetime') IS NOT NULL
+    """)
+    if not all(cur.fetchone()):
+        return False
+    cur.execute("""
+        SELECT column_name, data_type FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'grocery_prices'
+          AND column_name IN ('price', 'unit_price', 'unit')
+    """)
+    columns = dict(cur.fetchall())
+    return columns.get("price") == "numeric" and "unit_price" in columns and "unit" in columns
+
+
+def _ensure_price_schema(cur):
+    """Create or upgrade the price table, view and index. Only called when
+    _price_schema_current() says something is missing."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS grocery_prices (
+            id SERIAL PRIMARY KEY,
+            product TEXT,
+            price NUMERIC,
+            rate TEXT,
+            size TEXT,
+            store TEXT,
+            store_id TEXT,
+            datetime TIMESTAMP
+        );
+    """)
+    # Idempotent - safe to run every time rather than needing a
+    # one-off migration step. ADD COLUMN IF NOT EXISTS is a
+    # no-op if these already exist; ALTER COLUMN TYPE...USING
+    # is a harmless numeric->numeric cast if price is already
+    # NUMERIC (only matters for a table created before this).
+    cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit_price NUMERIC;")
+    cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit TEXT;")
+    # Postgres refuses ALTER COLUMN TYPE on a column any view
+    # depends on, even for a no-op cast (see #53) - drop the
+    # view first since it gets unconditionally recreated right
+    # after anyway, so every scrape after the first one doesn't
+    # hard-fail here.
+    cur.execute("DROP VIEW IF EXISTS grocery_prices_latest;")
+    cur.execute("ALTER TABLE grocery_prices ALTER COLUMN price TYPE NUMERIC USING price::numeric;")
+    # Cheap way to get "latest scrape only" per product/store
+    # without every consumer re-deriving it (see #11).
+    cur.execute("""
+        CREATE OR REPLACE VIEW grocery_prices_latest AS
+        SELECT DISTINCT ON (product, store) *
+        FROM grocery_prices
+        ORDER BY product, store, datetime DESC;
+    """)
+    # Every price-derived page reads through that view, and
+    # DISTINCT ON + ORDER BY with no supporting index means
+    # Postgres scans and sorts the entire table on each read
+    # (#65). datetime DESC is load-bearing rather than
+    # decorative here: the view orders product/store ascending
+    # but datetime descending, and a backwards index scan
+    # reverses *every* key column, so a plain (product, store,
+    # datetime) index cannot produce that ordering in either
+    # direction. Placed after the ALTER COLUMN TYPE above because
+    # that statement rewrites the table on the one run where
+    # price isn't NUMERIC yet, and a rewrite rebuilds every index
+    # on the table - building afterwards avoids building it twice.
+    # IF NOT EXISTS makes every scrape after the first a no-op;
+    # not CONCURRENTLY because that can't run in a transaction.
+    # The plain form takes only a SHARE lock on this table, which
+    # blocks writers (the scraper is the only one) and not readers -
+    # but that is a statement about THIS statement, not about the
+    # transaction it sits in. This block opens with ADD COLUMN IF NOT
+    # EXISTS and an ALTER COLUMN TYPE, and those take
+    # AccessExclusiveLock even when they change nothing (measured on
+    # postgres:16, and recorded in CONTRIBUTING §8), so a concurrent
+    # webapp read CAN block here for the duration. Pre-existing
+    # behaviour, not introduced by the index; #66 removes the whole
+    # category by moving DDL out of the request path and into
+    # startup. Build cost measured: 190 ms at 46k rows, 9.3 s at 4.2M.
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_grocery_prices_product_store_datetime
+        ON grocery_prices (product, store, datetime DESC);
+    """)
+
+
 def store_data(df):
     """Stores the scraped data in a PostgreSQL database. Raises on failure rather
     than swallowing it, so a broken run is visible instead of silently a no-op."""
@@ -109,72 +204,14 @@ def store_data(df):
         password=DB_PASS
     )
     try:
+        # Schema first, in its own transaction, and only if needed (#66).
         with conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS grocery_prices (
-                        id SERIAL PRIMARY KEY,
-                        product TEXT,
-                        price NUMERIC,
-                        rate TEXT,
-                        size TEXT,
-                        store TEXT,
-                        store_id TEXT,
-                        datetime TIMESTAMP
-                    );
-                """)
-                # Idempotent - safe to run every time rather than needing a
-                # one-off migration step. ADD COLUMN IF NOT EXISTS is a
-                # no-op if these already exist; ALTER COLUMN TYPE...USING
-                # is a harmless numeric->numeric cast if price is already
-                # NUMERIC (only matters for a table created before this).
-                cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit_price NUMERIC;")
-                cur.execute("ALTER TABLE grocery_prices ADD COLUMN IF NOT EXISTS unit TEXT;")
-                # Postgres refuses ALTER COLUMN TYPE on a column any view
-                # depends on, even for a no-op cast (see #53) - drop the
-                # view first since it gets unconditionally recreated right
-                # after anyway, so every scrape after the first one doesn't
-                # hard-fail here.
-                cur.execute("DROP VIEW IF EXISTS grocery_prices_latest;")
-                cur.execute("ALTER TABLE grocery_prices ALTER COLUMN price TYPE NUMERIC USING price::numeric;")
-                # Cheap way to get "latest scrape only" per product/store
-                # without every consumer re-deriving it (see #11).
-                cur.execute("""
-                    CREATE OR REPLACE VIEW grocery_prices_latest AS
-                    SELECT DISTINCT ON (product, store) *
-                    FROM grocery_prices
-                    ORDER BY product, store, datetime DESC;
-                """)
-                # Every price-derived page reads through that view, and
-                # DISTINCT ON + ORDER BY with no supporting index means
-                # Postgres scans and sorts the entire table on each read
-                # (#65). datetime DESC is load-bearing rather than
-                # decorative here: the view orders product/store ascending
-                # but datetime descending, and a backwards index scan
-                # reverses *every* key column, so a plain (product, store,
-                # datetime) index cannot produce that ordering in either
-                # direction. Placed after the ALTER COLUMN TYPE above because
-                # that statement rewrites the table on the one run where
-                # price isn't NUMERIC yet, and a rewrite rebuilds every index
-                # on the table - building afterwards avoids building it twice.
-                # IF NOT EXISTS makes every scrape after the first a no-op;
-                # not CONCURRENTLY because that can't run in a transaction.
-                # The plain form takes only a SHARE lock on this table, which
-                # blocks writers (the scraper is the only one) and not readers -
-                # but that is a statement about THIS statement, not about the
-                # transaction it sits in. This block opens with ADD COLUMN IF NOT
-                # EXISTS and an ALTER COLUMN TYPE, and those take
-                # AccessExclusiveLock even when they change nothing (measured on
-                # postgres:16, and recorded in CONTRIBUTING §8), so a concurrent
-                # webapp read CAN block here for the duration. Pre-existing
-                # behaviour, not introduced by the index; #66 removes the whole
-                # category by moving DDL out of the request path and into
-                # startup. Build cost measured: 190 ms at 46k rows, 9.3 s at 4.2M.
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_grocery_prices_product_store_datetime
-                    ON grocery_prices (product, store, datetime DESC);
-                """)
-
+                if not _price_schema_current(cur):
+                    print("Price schema missing or out of date - creating/upgrading it.")
+                    _ensure_price_schema(cur)
+        with conn:
+            with conn.cursor() as cur:
                 for _, row in df.iterrows():
                     unit_price, unit = _numeric_rate(row['Price'], row['Size'])
                     cur.execute("""

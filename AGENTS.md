@@ -32,9 +32,10 @@ correctness and not losing the family's recipes are not.
    "Fixing" it silently breaks cross-store matching.
 6. **No secrets in source, ever.** Config comes from `.env` (gitignored). Store
    IDs are location-identifying — never paste them into an issue, PR, or log.
-7. **Never add a new `ensure_*_table()` call site** and never write a destructive
-   migration as a side effect of a request handler. The current ad-hoc-DDL
-   schema handling is a known problem with its own issue; don't extend it.
+7. **Schema changes are numbered migrations** in `Groceries/webapp/migrations.py`,
+   applied once at startup (#66). Never call an `ensure_*` function or run DDL
+   from a request path, and never edit an `ensure_*` function to change the schema
+   - existing databases won't re-run it. Destructive steps only in a migration.
 8. **Don't disturb the running containers.** `groceries-webapp-1` and
    `groceries-db-1` may be up on the dev machine. Jake's dev instance is not
    production. Don't restart, rebuild, or `down` them, and don't run destructive
