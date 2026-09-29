@@ -892,3 +892,19 @@ details.card[open] > summary { margin-bottom: var(--space-3); }
     thead th { position: static; background: none; border-bottom: 1px solid #000; }
     a { color: #000; text-decoration: none; }
 }
+
+/* /prices search: one column per store (#107). auto-fit so three stores sit
+   side by side on a laptop and stack on a phone, with no media query. */
+.store-cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+    gap: var(--space-4);
+    margin-bottom: var(--space-4);
+}
+.store-cols .card + .card { margin-top: 0; }
+/* Every match is listed (nothing truncated - see group_search_results), so a
+   long column scrolls inside itself instead of stretching the page. */
+.store-col { max-height: 36rem; overflow-y: auto; }
+.store-col__item { padding: var(--space-2) 0; border-top: 1px solid var(--border); }
+.store-col__item:first-of-type { border-top: 0; }
+.store-col__item .row { margin-top: var(--space-1); }

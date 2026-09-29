@@ -6,7 +6,12 @@
     {% if rows %}<span class="badge badge--muted">{{ rows|length }} result(s)</span>{% endif %}
 </div>
 <p class="subtitle">
+    {% if columns is not none %}
+    Each store's closest matches for &ldquo;{{ query }}&rdquo;, best match first, then
+    cheapest per unit &mdash; using the same matching as the grocery list.
+    {% else %}
     The latest scraped price per product per store. Sorted by whatever column you click.
+    {% endif %}
 </p>
 
 <form method="get" class="form-row">
@@ -18,15 +23,66 @@
     {% if query %}<a class="btn" href="/prices">Clear</a>{% endif %}
 </form>
 
+{% if columns is not none %}
+{% include "_price_freshness.html" %}
+{# One column per store (#107): the question this page is asked is "what does
+   each store have for X", and a single list sorted by unit price answered a
+   different one. Each store always gets a column, so "no match at Aldi" is
+   stated rather than left for the reader to notice. #}
+<div class="store-cols">
+    {% for col in columns %}
+    <section class="card store-col" aria-labelledby="col-{{ loop.index }}">
+        <h2 class="card__title" id="col-{{ loop.index }}">
+            <span class="badge badge--store">{{ col.store }}</span>
+            {% if col.total %}<span class="faint small">{{ col.total }} match{{ "es" if col.total != 1 }}</span>{% endif %}
+        </h2>
+        {% for row in col.rows %}
+        <div class="store-col__item">
+            <div class="item-name">{{ row.product }}</div>
+            <div class="row row--tight">
+                <span class="price">${{ "%.2f"|format(row.price) if row.price is not none else "?" }}</span>
+                {% if row.size %}<span class="muted small">{{ row.size }}</span>{% endif %}
+                {% if row.unit_price is not none %}<span class="rate">${{ "%.2f"|format(row.unit_price) }} / {{ row.unit }}</span>{% endif %}
+            </div>
+            {% if row.match_score < low_confidence %}
+            <span class="unsure" title="Match score {{ '%.2f'|format(row.match_score) }} of 1.00; below the {{ low_confidence }} confidence threshold">&#9888; loose match</span>
+            {% endif %}
+            <div class="row row--tight">
+                {# No Add on an unpriced row: pinning one breaks /list (see the
+                   same filter in /list/pick). #}
+                {% if row.price is not none %}
+                <form method="post" action="/list/add_pinned">
+                    <input type="hidden" name="name" value="{{ row.product }}">
+                    <input type="hidden" name="product" value="{{ row.product }}">
+                    <input type="hidden" name="store" value="{{ row.store }}">
+                    <button type="submit" class="btn btn--sm" title="Add this exact product to the grocery list, pinned to it">Add</button>
+                </form>
+                {% endif %}
+                <form method="post" action="/staples/pin">
+                    <input type="hidden" name="product" value="{{ row.product }}">
+                    <input type="hidden" name="store" value="{{ row.store }}">
+                    <button type="submit" class="btn btn--sm btn--quiet" title="Pin to staples so it is always compared across stores">Pin</button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <p class="muted">No match at {{ col.store }}. Try a more general term, or check
+        <a href="/prices?q={{ query|urlencode }}&amp;view=all">every name containing &ldquo;{{ query }}&rdquo;</a>.</p>
+        {% endfor %}
+    </section>
+    {% endfor %}
+</div>
+<p class="small muted">Not seeing it? <a href="/prices?q={{ query|urlencode }}&amp;view=all">Show every product whose name contains &ldquo;{{ query }}&rdquo;</a>, sortable by price.</p>
+{% else %}
 <div class="table-wrap">
     <table>
         <thead>
             <tr>
-                <th scope="col"><a href="?q={{ query }}&amp;sort=product">Product</a></th>
-                <th scope="col"><a href="?q={{ query }}&amp;sort=store">Store</a></th>
-                <th scope="col" class="num"><a href="?q={{ query }}&amp;sort=price">Price</a></th>
+                <th scope="col"><a href="?q={{ query|urlencode }}&amp;view={{ view|urlencode }}&amp;sort=product">Product</a></th>
+                <th scope="col"><a href="?q={{ query|urlencode }}&amp;view={{ view|urlencode }}&amp;sort=store">Store</a></th>
+                <th scope="col" class="num"><a href="?q={{ query|urlencode }}&amp;view={{ view|urlencode }}&amp;sort=price">Price</a></th>
                 <th scope="col">Size</th>
-                <th scope="col" class="num"><a href="?q={{ query }}&amp;sort=unit_price">Unit rate</a></th>
+                <th scope="col" class="num"><a href="?q={{ query|urlencode }}&amp;view={{ view|urlencode }}&amp;sort=unit_price">Unit rate</a></th>
                 <th scope="col">Scraped</th>
                 <th scope="col"><span class="sr-only">Actions</span></th>
             </tr>
@@ -67,7 +123,7 @@
                     <div class="empty__glyph" aria-hidden="true">&#128269;</div>
                     <div class="empty__title">No results{% if query %} for &ldquo;{{ query }}&rdquo;{% endif %}</div>
                     {% if query %}
-                    <p>Try a shorter or more generic term &mdash; the search is a plain substring
+                    <p>Try a shorter or more generic term &mdash; this view is a plain substring
                     match against retailer product names, so &ldquo;chicken&rdquo; finds more than
                     &ldquo;chicken breast&rdquo;.</p>
                     {% else %}
@@ -80,4 +136,5 @@
         </tbody>
     </table>
 </div>
+{% endif %}
 {% endblock %}
