@@ -6,6 +6,7 @@ tests break if the grouping and the matcher stop agreeing.
 """
 
 import unittest
+import unittest.mock
 
 import app
 import matching
@@ -87,3 +88,60 @@ class GroupSearchResultsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _Cur:
+    def __init__(self):
+        self.last = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.last = sql
+
+    def fetchone(self):
+        return {"table_exists": True}
+
+    def fetchall(self):
+        return []
+
+
+class _Conn:
+    def cursor(self, **kwargs):
+        return _Cur()
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class StoreNameRoutingTests(unittest.TestCase):
+    """Review of #113: a store-name query must go to the substring table without
+    loading the catalog (that was two full scans of the view), and "aldi" must
+    count as the store "Aldis"."""
+
+    def setUp(self):
+        app.app.config["TESTING"] = True
+        self.client = app.app.test_client()
+
+    def _get(self, q):
+        loads = []
+        with unittest.mock.patch.object(app, "get_connection", _Conn), \
+                unittest.mock.patch.object(matching, "load_catalog", lambda cur: loads.append(1) or []):
+            resp = self.client.get("/prices", query_string={"q": q})
+        return resp, len(loads)
+
+    def test_store_names_skip_the_catalog(self):
+        for q in ["aldi", "Aldis", "bjs", "BJ's", "tops"]:
+            resp, loads = self._get(q)
+            self.assertEqual((resp.status_code, loads), (200, 0), q)
+
+    def test_product_query_uses_the_matcher(self):
+        _, loads = self._get("chicken breast")
+        self.assertEqual(loads, 1)

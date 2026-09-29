@@ -465,10 +465,12 @@ def index():
 def group_search_results(matches, stores):
     """match_item() results -> one column per store, best candidate first (#107).
 
-    Ordered by match score, then unit price, so within equally good matches the
-    cheaper one leads - the same "identity first, price only breaks ties" rule
-    best_per_store() uses, for the same reason: price must not promote a
-    different product over the one asked for. Every store in `stores` gets a
+    Ordered by match score, then unit price: identity first, price only breaks
+    ties, the same principle best_per_store() follows - price must not promote a
+    different product over the one asked for. Not identical to it, though:
+    best_per_store breaks ties on package price, this on unit price, because a
+    shopper comparing options wants the better rate first. So this column's top
+    row is not guaranteed to be the one /list picks. Every store in `stores` gets a
     column even when it has no match, so "not sold here" is said rather than
     shown as a missing column (the "No price match found" principle from #25).
 
@@ -514,13 +516,18 @@ def prices():
             # interleaved with raw breasts, and Aldi's "per lb" listings (no unit
             # price) sorted to the very end.
             #
-            # The store list comes from the catalog rather than a SELECT DISTINCT
-            # on the view, which would walk every retained row a second time
-            # (#65). A query that IS a store name ("bjs") falls through to the
-            # substring table, which is what that search has always meant.
-            catalog = matching.load_catalog(cur) if query and view != "all" else None
-            stores = sorted({row["store"] for row in catalog}) if catalog else []
-            if catalog is not None and query.lower() not in {s.lower() for s in stores}:
+            # A store-name query ("bjs", "aldi") falls through to the substring
+            # table, which is what that search has always meant. Decided BEFORE
+            # loading the catalog, against the fixed scraper labels, so it costs
+            # no scan - deciding after meant two full reads of the view (#65).
+            # Prefix match, because the label is "Aldis" and people type "aldi".
+            # The store list itself comes from the loaded catalog, not a second
+            # SELECT DISTINCT over the view.
+            q = query.lower().replace("'", "")
+            store_search = bool(q) and any(name.lower().startswith(q) for name in EXPECTED_STORES)
+            if query and view != "all" and not store_search:
+                catalog = matching.load_catalog(cur)
+                stores = sorted({row["store"] for row in catalog})
                 columns = group_search_results(matching.match_item(catalog, query), stores)
                 return render_template(
                     "prices.html", rows=[], columns=columns, query=query, sort=sort,

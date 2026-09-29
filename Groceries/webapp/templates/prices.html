@@ -7,8 +7,8 @@
 </div>
 <p class="subtitle">
     {% if columns is not none %}
-    Each store's closest matches for &ldquo;{{ query }}&rdquo;, best match first &mdash; the
-    same matching the grocery list uses, so what you see here is what the list would pick.
+    Each store's closest matches for &ldquo;{{ query }}&rdquo;, best match first, then
+    cheapest per unit &mdash; using the same matching as the grocery list.
     {% else %}
     The latest scraped price per product per store. Sorted by whatever column you click.
     {% endif %}
@@ -48,12 +48,16 @@
             <span class="unsure" title="Match score {{ '%.2f'|format(row.match_score) }} of 1.00; below the {{ low_confidence }} confidence threshold">&#9888; loose match</span>
             {% endif %}
             <div class="row row--tight">
+                {# No Add on an unpriced row: pinning one breaks /list (see the
+                   same filter in /list/pick). #}
+                {% if row.price is not none %}
                 <form method="post" action="/list/add_pinned">
                     <input type="hidden" name="name" value="{{ row.product }}">
                     <input type="hidden" name="product" value="{{ row.product }}">
                     <input type="hidden" name="store" value="{{ row.store }}">
                     <button type="submit" class="btn btn--sm" title="Add this exact product to the grocery list, pinned to it">Add</button>
                 </form>
+                {% endif %}
                 <form method="post" action="/staples/pin">
                     <input type="hidden" name="product" value="{{ row.product }}">
                     <input type="hidden" name="store" value="{{ row.store }}">
@@ -74,11 +78,11 @@
     <table>
         <thead>
             <tr>
-                <th scope="col"><a href="?q={{ query|urlencode }}&amp;view={{ view }}&amp;sort=product">Product</a></th>
-                <th scope="col"><a href="?q={{ query|urlencode }}&amp;view={{ view }}&amp;sort=store">Store</a></th>
-                <th scope="col" class="num"><a href="?q={{ query|urlencode }}&amp;view={{ view }}&amp;sort=price">Price</a></th>
+                <th scope="col"><a href="?q={{ query|urlencode }}&amp;view={{ view|urlencode }}&amp;sort=product">Product</a></th>
+                <th scope="col"><a href="?q={{ query|urlencode }}&amp;view={{ view|urlencode }}&amp;sort=store">Store</a></th>
+                <th scope="col" class="num"><a href="?q={{ query|urlencode }}&amp;view={{ view|urlencode }}&amp;sort=price">Price</a></th>
                 <th scope="col">Size</th>
-                <th scope="col" class="num"><a href="?q={{ query|urlencode }}&amp;view={{ view }}&amp;sort=unit_price">Unit rate</a></th>
+                <th scope="col" class="num"><a href="?q={{ query|urlencode }}&amp;view={{ view|urlencode }}&amp;sort=unit_price">Unit rate</a></th>
                 <th scope="col">Scraped</th>
                 <th scope="col"><span class="sr-only">Actions</span></th>
             </tr>
