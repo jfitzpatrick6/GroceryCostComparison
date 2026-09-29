@@ -133,7 +133,7 @@ class StoreNameRoutingTests(unittest.TestCase):
     def _get(self, q):
         loads = []
         with unittest.mock.patch.object(app, "get_connection", _Conn), \
-                unittest.mock.patch.object(matching, "load_catalog", lambda cur: loads.append(1) or []):
+                unittest.mock.patch.object(matching, "cached_catalog", lambda cur: loads.append(1) or []):
             resp = self.client.get("/prices", query_string={"q": q})
         return resp, len(loads)
 

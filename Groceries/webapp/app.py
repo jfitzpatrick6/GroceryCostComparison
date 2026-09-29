@@ -685,7 +685,7 @@ def prices():
             q = query.lower().replace("'", "")
             store_search = bool(q) and any(name.lower().startswith(q) for name in EXPECTED_STORES)
             if query and view != "all" and not store_search:
-                catalog = matching.load_catalog(cur)
+                catalog = matching.cached_catalog(cur)
                 stores = sorted({row["store"] for row in catalog})
                 columns = group_search_results(matching.match_item(catalog, query), stores)
                 return render_template(
@@ -819,7 +819,7 @@ def grocery_list():
             # a scrape has actually run - skip matching entirely rather
             # than 500ing on a fresh deployment with no scrape history yet.
             if price_data_available(cur):
-                catalog = matching.load_catalog(cur)
+                catalog = matching.cached_catalog(cur)
                 for item in items:
                     # resolve_item_match prefers an exact catalogue pin (#98) and
                     # only falls back to fuzzy matching for unpinned items or a
@@ -1349,7 +1349,7 @@ def where_to_buy():
             freshness = None
 
             if price_data_available(cur):
-                catalog = matching.load_catalog(cur)
+                catalog = matching.cached_catalog(cur)
                 freshness = price_freshness_from_catalog(catalog)
                 for item in items:
                     # One product per store (the best identity match, not
