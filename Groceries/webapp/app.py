@@ -349,8 +349,12 @@ def handle_error(err):
         code = err.code or 500
         name, detail = _ERROR_COPY.get(code, (err.name, err.description or ""))
     else:
-        code = 500
-        name, detail = _ERROR_COPY[500]
+        # OperationalError is psycopg2's "could not connect / connection lost".
+        # Without this the 503 copy above was unreachable: a db restart - the
+        # most likely failure, per the note above - got the generic 500 text
+        # instead of the one that says what to check.
+        code = 503 if isinstance(err, psycopg2.OperationalError) else 500
+        name, detail = _ERROR_COPY[code]
         app.logger.exception(
             "Unhandled %s on %s %s", type(err).__name__, request.method, request.path
         )
@@ -1647,7 +1651,11 @@ def set_planner_slot():
             conn.commit()
         finally:
             conn.close()
-    flash(f"Planned for {DAY_NAMES[int(day_of_week)]} {meal}.", "success")
+        flash(f"Planned for {DAY_NAMES[day_of_week]} {meal}.", "success")
+    else:
+        # The picker's placeholder submits an empty recipe_id. Saying "Planned"
+        # there would confirm a save that never happened.
+        flash("Pick a recipe to plan it.", "error")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -1672,7 +1680,7 @@ def remove_planner_recipe():
         conn.commit()
     finally:
         conn.close()
-    flash(f"Removed from {DAY_NAMES[int(day_of_week)]} {meal}.", "success")
+    flash(f"Removed from {DAY_NAMES[day_of_week]} {meal}.", "success")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -1701,8 +1709,12 @@ def add_planner_extra():
             conn.commit()
         finally:
             conn.close()
-    qty = " ".join(str(x) for x in (amount, unit) if x)
-    flash(f"Added {qty + chr(32) if qty else chr(32)}{name} to {DAY_NAMES[int(day_of_week)]} {meal}.", "success")
+        # Inside the `if`: amount/unit/name only exist when a line was parsed,
+        # so a blank submit used to raise UnboundLocalError here and 500.
+        added = " ".join(str(x) for x in (amount, unit, name) if x)
+        flash(f"Added {added} to {DAY_NAMES[day_of_week]} {meal}.", "success")
+    else:
+        flash("Enter an ingredient line to add it.", "error")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
