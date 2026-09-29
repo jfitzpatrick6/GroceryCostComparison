@@ -243,10 +243,23 @@ class MockedUsdaMatchingTests(unittest.TestCase):
         patcher.start()
 
     def test_pepper_resolves_to_spice_not_vegetable(self):
-        # The #54 headline bug: bare "pepper" used to top-match "Pepper,
-        # banana, raw" (which has no tsp/tbsp portion data anyway, in real
-        # FDC data) - it must resolve to the spice's real 2.3g/tsp instead.
-        self.assertEqual(app._usda_grams_per_unit("pepper", ["tsp"]), 2.3)
+        # #54: bare "pepper" must be the spice, not "Pepper, banana, raw". Since #78 the
+        # spice's "tsp, ground" 2.3g vs "tsp, whole" 2.9g (26% apart) means an unqualified
+        # tsp is no estimate - so identity is asserted through the named form.
+        self.assertEqual(app._usda_grams_per_unit("ground pepper", ["tsp"]), 2.3)
+        self.assertIsNone(app._usda_grams_per_unit("pepper", ["tsp"]))
+    def test_portion_policy_on_real_audited_values(self):
+        # #78, values captured live 2026-09-29.
+        onion = [("cup, chopped", 160.0), ("cup, sliced", 115.0)]
+        broccoli = [("cup, chopped or diced", 88.0), ("cup chopped", 91.0)]
+        brown_sugar = [("cup packed", 220.0), ("cup unpacked", 145.0)]
+        self.assertEqual(app.choose_portion(onion, {"chopped"}), 160.0)
+        self.assertIsNone(app.choose_portion(onion, set()))            # 39% apart
+        self.assertIsNone(app.choose_portion(onion, {"diced"}))        # form FDC lacks
+        self.assertEqual(app.choose_portion(broccoli, set()), 89.5)    # 3%: median
+        self.assertEqual(app.choose_portion(brown_sugar, {"packed"}), 220.0)  # not "unpacked"
+        self.assertEqual(app.choose_portion(brown_sugar, {"unpacked"}), 145.0)
+        self.assertEqual(app._split_form_words("brown sugar, packed"), ("brown sugar", {"packed"}))
 
     def test_butter_resolves_to_plain_butter_not_ghee(self):
         # The #54 headline bug: bare "butter" used to top-match "Butter,
@@ -281,23 +294,21 @@ class MockedUsdaMatchingTests(unittest.TestCase):
         self.assertIsNone(app._usda_grams_per_unit("melted butter", ["cup"]))
 
     def test_bell_pepper_resolves_via_alias_to_sweet_red(self):
-        # #58: without the alias, "bell pepper" resolves to the newer
-        # "Peppers, bell, red, raw" entry which has no cup portion data ->
-        # None. With it, the query becomes "peppers sweet red raw" and lands on
-        # 170108 (92g/cup sliced - real FDC order puts the whole-pepper portion
-        # first, then cup-sliced before cup-chopped).
-        self.assertEqual(app._usda_grams_per_unit("bell pepper", ["cup"]), 92.0)
-
+        # #78: 170108/170427 carry "cup, sliced" 92g AND "cup, chopped" 149g (62%
+        # apart). The old 92/149 split was only FDC's list order; an unqualified
+        # cup is now no estimate, and the recipe's form picks the portion.
+        self.assertIsNone(app._usda_grams_per_unit("bell pepper", ["cup"]))
+        self.assertEqual(app._usda_grams_per_unit("bell pepper, sliced", ["cup"]), 92.0)
+        self.assertEqual(app._usda_grams_per_unit("chopped bell pepper", ["cup"]), 149.0)
     def test_red_bell_pepper_resolves_via_alias(self):
-        self.assertEqual(app._usda_grams_per_unit("red bell pepper", ["cup"]), 92.0)
-
+        self.assertEqual(app._usda_grams_per_unit("sliced red bell pepper", ["cup"]), 92.0)
     def test_green_bell_pepper_resolves_via_alias_to_sweet_green(self):
-        # The green alias must not reuse the red entry's data - it resolves
-        # to "Peppers, sweet, green, raw" (170427), same 149g/cup value but
-        # a different fdcId (a wrong-alias regression would still pass the
-        # value check here, so this is mostly about the alias mapping).
-        self.assertEqual(app._usda_grams_per_unit("green bell pepper", ["cup"]), 149.0)
-
+        # #78: 170108/170427 carry "cup, sliced" 92g AND "cup, chopped" 149g (62%
+        # apart). The old 92/149 split was only FDC's list order; an unqualified
+        # cup is now no estimate, and the recipe's form picks the portion.
+        # Same form, same answer, whichever colour - the inconsistency #78 was filed for.
+        self.assertEqual(app._usda_grams_per_unit("chopped green bell pepper", ["cup"]), 149.0)
+        self.assertEqual(app._usda_grams_per_unit("sliced green bell pepper", ["cup"]), 92.0)
     def test_green_onion_resolves_via_alias_to_spring_onion(self):
         # #58. Without the alias this did NOT fail safe. Verified live: a
         # plain "green onion" search returns 170006 "Onions, young green,
@@ -375,24 +386,21 @@ class LiveUsdaApiTests(unittest.TestCase):
     code."""
 
     def test_pepper_is_the_spice(self):
-        # "Spices, pepper, black", fdcId 170931 -> 1 tsp, ground = 2.3g.
-        # The vegetable "Pepper, banana, raw" (fdcId 169394, the old wrong
-        # top match) has no tsp/tbsp portion data in real FDC data, so a
-        # regression back to matching it would show up as None here, not
-        # as a different (wrong) number.
-        self.assertEqual(app._usda_grams_per_unit("pepper", ["tsp"]), 2.3)
-
+        # #54: bare "pepper" must be the spice, not "Pepper, banana, raw". Since #78 the
+        # spice's "tsp, ground" 2.3g vs "tsp, whole" 2.9g (26% apart) means an unqualified
+        # tsp is no estimate - so identity is asserted through the named form.
+        self.assertEqual(app._usda_grams_per_unit("ground pepper", ["tsp"]), 2.3)
+        self.assertIsNone(app._usda_grams_per_unit("pepper", ["tsp"]))
     def test_butter_is_plain_butter(self):
         # "Butter, salted", fdcId 173410 -> 1 cup = 227g.
         self.assertEqual(app._usda_grams_per_unit("butter", ["cup"]), 227.0)
 
     def test_onion_is_raw_onion(self):
-        # "Onions, raw", fdcId 170000 -> 1 cup, chopped = 160g. Confirmed
-        # against real data (not assumed, per #54) that a bare "onion"
-        # query needs the general plural-tolerant/starts-with fix, not its
-        # own alias table entry.
-        self.assertEqual(app._usda_grams_per_unit("onion", ["cup"]), 160.0)
-
+        # "Onions, raw", fdcId 170000. #78: live data carries "cup, chopped" 160g and
+        # "cup, sliced" 115g (39% apart), so the form decides; bare "onion" by the cup is
+        # no estimate. Identity (not onion rings) is still what this asserts.
+        self.assertEqual(app._usda_grams_per_unit("chopped onion", ["cup"]), 160.0)
+        self.assertIsNone(app._usda_grams_per_unit("onion", ["cup"]))
     def test_flour_is_wheat_all_purpose_flour(self):
         # "Wheat flour, white, all-purpose, unenriched" (SR Legacy),
         # fdcId 169761 -> 1 cup = 125g - not "Arrowroot flour" (fdcId
@@ -411,24 +419,20 @@ class LiveUsdaApiTests(unittest.TestCase):
         self.assertEqual(app._usda_grams_per_unit("sugar", ["cup"]), 200.0)
 
     def test_black_pepper_phrase_also_resolves_correctly(self):
-        # A multi-word ingredient name close to how a recipe would
-        # actually phrase it, not just the bare single word.
-        self.assertEqual(app._usda_grams_per_unit("black pepper", ["tsp"]), 2.3)
-
+        # Two-word phrase reaches the spice too. #78: ground 2.3g vs whole 2.9g per tsp,
+        # so the form is needed for a number.
+        self.assertEqual(app._usda_grams_per_unit("ground black pepper", ["tsp"]), 2.3)
+        self.assertIsNone(app._usda_grams_per_unit("black pepper", ["tsp"]))
     def test_bell_pepper_gets_a_real_estimate(self):
-        # #58: live check that "bell pepper" resolves to
-        # "Peppers, sweet, red, raw" (170108) -> 1 cup sliced = 92g (first cup portion in real FDC order).
-        # Before the alias this returned None on real FDC data because the
-        # top-ranked "Peppers, bell, red, raw" entry has no cup portion.
-        self.assertEqual(app._usda_grams_per_unit("bell pepper", ["cup"]), 92.0)
-
+        # #78: 170108/170427 carry "cup, sliced" 92g AND "cup, chopped" 149g (62%
+        # apart). The old 92/149 split was only FDC's list order; an unqualified
+        # cup is now no estimate, and the recipe's form picks the portion.
+        self.assertIsNone(app._usda_grams_per_unit("bell pepper", ["cup"]))
+        self.assertEqual(app._usda_grams_per_unit("sliced bell pepper", ["cup"]), 92.0)
     def test_red_bell_pepper_gets_a_real_estimate(self):
-        self.assertEqual(app._usda_grams_per_unit("red bell pepper", ["cup"]), 92.0)
-
+        self.assertEqual(app._usda_grams_per_unit("chopped red bell pepper", ["cup"]), 149.0)
     def test_green_bell_pepper_gets_a_real_estimate(self):
-        # "Peppers, sweet, green, raw" (170427) -> 1 cup chopped = 149g.
-        self.assertEqual(app._usda_grams_per_unit("green bell pepper", ["cup"]), 149.0)
-
+        self.assertEqual(app._usda_grams_per_unit("chopped green bell pepper", ["cup"]), 149.0)
     def test_green_onion_gets_a_real_estimate(self):
         # #58: live check that "green onion" resolves to "Onions, spring or
         # scallions (includes tops and bulb), raw" (170005) -> 1 cup chopped

@@ -2532,6 +2532,75 @@ def ensure_ingredient_conversions_table(cur):
     """)
 
 
+# --- Portion choice within one FDC entry (#78) ----------------------------------
+#
+# An FDC entry often carries several portions for the same measure, differing by
+# the food's form: "cup, chopped" vs "cup, sliced", "cup packed" vs "cup
+# unpacked", "cup sifted" vs "unsifted". The old loop returned whichever came
+# first in FDC's list, which is not a meaning - red bell pepper got 92 g/cup
+# (sliced listed first) and green got 149 g/cup (chopped first). Audited live on
+# 2026-09-29 across the household's ingredients and common staples:
+#   bell pepper    sliced 92 / chopped 149        62% apart
+#   brown sugar    packed 220 / unpacked 145      52%
+#   onion          chopped 160 / sliced 115       39%
+#   pepper (tsp)   ground 2.3 / whole 2.9         26%
+#   powdered sugar sifted 100 / unsifted 120      20%
+#   carrots        grated 110 / chopped 128 / strips 122   16%
+#   broccoli       chopped or diced 88 / chopped 91          3%
+# Policy, deliberately and in this order:
+#   1. The recipe says the form ("chopped onion", "brown sugar, packed") and
+#      exactly one portion carries it -> that portion.
+#   2. Every matching portion agrees within PORTION_AGREEMENT -> their median.
+#      The form doesn't matter at that point, so neither does FDC's order.
+#   3. The recipe names a form no portion carries -> no estimate.
+#   4. Otherwise -> no estimate. #78 is explicit that silently preferring one of
+#      two genuinely different forms is worse than None, and so is this
+#      codebase ("a missing purchase estimate is fine, a wrong one silently
+#      corrupts the shopping list"). Recipes usually name the form, which
+#      rule 1 then honours.
+_FORM_WORDS = (
+    "chopped", "sliced", "diced", "minced", "grated", "shredded", "packed",
+    "unpacked", "sifted", "unsifted", "ground", "whole", "melted", "crushed",
+    "cubed", "mashed", "halved",
+)
+_FORM_WORD_RE = re.compile(r"\b(" + "|".join(_FORM_WORDS) + r")\b", re.IGNORECASE)
+PORTION_AGREEMENT = 0.15
+
+
+def _split_form_words(name):
+    """"chopped onion" -> ("onion", {"chopped"}); "brown sugar, packed" ->
+    ("brown sugar", {"packed"}). The form steers portion choice; searching FDC
+    with it would fail #54's all-words identity filter ("Onions, raw" never
+    says "chopped")."""
+    forms = {m.lower() for m in _FORM_WORD_RE.findall(name or "")}
+    base = _FORM_WORD_RE.sub(" ", name or "")
+    base = re.sub(r"\s*,\s*$|^\s*,\s*", "", re.sub(r"\s+", " ", base)).strip(" ,")
+    return (base or name), forms
+
+
+def choose_portion(matching, forms):
+    """[(modifier, grams_per_unit), ...] for one entry -> grams, or None. See the
+    policy above."""
+    if not matching:
+        return None
+    if forms:
+        named = [g for m, g in matching
+                 if any(re.search(rf"\b{re.escape(f)}\b", m, re.IGNORECASE) for f in forms)]
+        if len(named) == 1:
+            return named[0]
+        if not named:
+            # The recipe names a form FDC has no portion for ("melted butter",
+            # "diced onion"). The form may change the weight per cup, so an
+            # unqualified portion would be a guess - #54 already decided
+            # "melted butter" must be None rather than plain butter's 227 g.
+            return None
+    values = sorted(g for _, g in matching)
+    if values[-1] <= values[0] * (1 + PORTION_AGREEMENT):
+        mid = len(values) // 2
+        return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+    return None
+
+
 def _usda_grams_per_unit(name, measure_words):
     """Looks up how many grams one of `measure_words` (e.g. ["tsp",
     "teaspoon"]) of `name`
@@ -2545,7 +2614,10 @@ def _usda_grams_per_unit(name, measure_words):
     try:
         # #54: search the alias's biased phrase for known-ambiguous names
         # (see _USDA_SEARCH_ALIASES above), the raw name otherwise.
-        search_name = _USDA_SEARCH_ALIASES.get((name or "").strip().lower(), name)
+        # #78: form words ("chopped") choose the portion below; they are not
+        # part of the food's identity, so they are removed before searching.
+        base_name, forms = _split_form_words(name)
+        search_name = _USDA_SEARCH_ALIASES.get(base_name.strip().lower(), base_name)
         search = requests.get(
             "https://api.nal.usda.gov/fdc/v1/foods/search",
             params={"query": search_name, "pageSize": 10, "dataType": "SR Legacy,Foundation", "api_key": api_key},
@@ -2612,12 +2684,19 @@ def _usda_grams_per_unit(name, measure_words):
                 timeout=5,
             )
             detail.raise_for_status()
+            matching = []
             for portion in detail.json().get("foodPortions") or []:
                 modifier = (portion.get("modifier") or "").lower()
                 gram_weight = portion.get("gramWeight")
                 amount = portion.get("amount") or 1.0
                 if gram_weight and amount and any(w in modifier for w in measure_words):
-                    return float(gram_weight) / float(amount)
+                    matching.append((modifier, float(gram_weight) / float(amount)))
+            if matching:
+                # The first candidate WITH this measure is the identity match;
+                # an ambiguous portion there is an answer (None), not a reason
+                # to fall through to a less relevant food that happens to be
+                # unambiguous.
+                return choose_portion(matching, forms)
     except (requests.RequestException, ValueError, KeyError, TypeError):
         return None
     return None

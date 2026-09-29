@@ -31,8 +31,20 @@ import app
 # Arbitrary constant; only needs to be unique among this database's advisory locks.
 _LOCK_KEY = 660066
 
+def _clear_first_match_conversions(cur):
+    """#78 changed which USDA portion a cup/tbsp/tsp resolves to, and
+    ingredient_conversions caches the OLD answers with no invalidation - a cached
+    160 g/cup for "onion" would outlive the rule that now says "no estimate". The
+    rows are derived data: the background worker (#64) re-resolves any missing
+    one on the next page view. So this deletes rows, but loses nothing that can't
+    be recomputed, which is why it doesn't need a backup first (CONTRIBUTING §8)."""
+    cur.execute("DELETE FROM ingredient_conversions")
+
+
 MIGRATIONS = [
     (1, "baseline: every app table as of #66", app.ensure_app_schema),
+    (2, "clear USDA conversions cached under first-match portion choice (#78)",
+     _clear_first_match_conversions),
 ]
 
 
