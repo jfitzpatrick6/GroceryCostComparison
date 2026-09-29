@@ -115,6 +115,12 @@ _STRIP_WORDS = {
     "assorted", "variety", "selection", "each", "ea", "piece", "pieces",
     "pc", "the", "a", "an", "and", "with", "of", "in", "for", "your",
     "new", "our",
+    # "per" is a rate preposition, not part of a product name. Without it,
+    # "Kirkwood Chicken Breasts, per lb" has "per" as its head noun, and a
+    # single-token "chicken" query took the non-head penalty against a product
+    # that is exactly chicken - which is how "boneless skinless chicken breast"
+    # degraded from 0.800 to 0.560, breaking #99's explicit done bar.
+    "per",
 }
 # Deliberately NOT stripped despite reading like marketing filler: "club"
 # and "warehouse" - real data check turned up an Aldi private-label line
@@ -182,6 +188,129 @@ def normalize_tokens(text):
             continue
         tokens.add(_TOKEN_SYNONYMS.get(stemmed, stemmed))
     return frozenset(tokens)
+
+
+# --- Word-order signals (#99) --------------------------------------------
+#
+# score_match's ratio (query tokens / product tokens) cannot tell a branded
+# version of the right product from a different product that merely mentions it.
+# Both "Wellsley Farms Bacon" and "TOPS Bacon Chips" are three tokens containing
+# "bacon", so both scored 0.333 for the query "bacon" - and since where_to_buy
+# then picks the CHEAPEST per store, the wrong product wins whenever it costs
+# less. Measured on the live 21,574-row catalog, that produced:
+#
+#   bacon -> "Breakfast Pizza With Bacon", "TOPS Bacon Chips"
+#   eggs  -> "Aldi Potato Salad with Egg"
+#   milk  -> "Goya Coconut Milk", "Carnation Evaporated Milk" (tied with real milk)
+#
+# Two structural signals separate most of these without a lexicon of every
+# product name:
+#
+# 1. A connective before the query word means the query word is an INGREDIENT of a
+#    composite, not the product. "Breakfast Pizza With Bacon" is a pizza; "Aldi
+#    Potato Salad with Egg" is a salad. This has to be read from the RAW words,
+#    because "with", "and" and "in" are all in _STRIP_WORDS and so vanish from the
+#    normalized token set entirely.
+# 2. The head noun. English grocery names put the product last ("Wellsley Farms
+#    Bacon"), so a product whose final significant token is not one of the query's
+#    is more likely something else that merely mentions it ("TOPS Bacon Chips" is
+#    chips). Read from the normalized sequence so trailing counts and units -
+#    which _STRIP_WORDS/_UNIT_WORDS already drop - don't masquerade as the head
+#    noun ("Eggs 12 ct" normalizes to just ["egg"]).
+#
+# Both are PENALTIES, not rejections. Inverted names are common in this data
+# ("Milk, Whole" has no query token last) and a hard rule would drop legitimate
+# products; a penalty ranks them below a better candidate while still matching
+# when nothing better exists. Combined with the low-confidence marker from #97 and
+# the picker from #98, a surviving weak match is visible and correctable rather
+# than silent.
+
+# "w" is deliberately NOT here, even though "w/" abbreviates "with" on packaging:
+# token_sequences() unconditionally rewrites "&" to " and ", so "A&W Cream Soda"
+# tokenizes to [a, and, w, cream, soda] and a standalone "w" would make every A&W
+# and B&W product look like a composite. 24 live rows carry a standalone "w", 12
+# of them created by that rewrite, and "A&W Cream Soda" was confirmed lost. The
+# "&" rewrite already catches genuine "X with Y" composites, so nothing is given
+# up by leaving "w" out.
+_INGREDIENT_CONNECTIVES = {
+    "with", "and", "in", "containing", "contained", "topped", "filled", "stuffed",
+}
+
+# Multiplicative penalties. Chosen so a composite ("Breakfast Pizza With Bacon",
+# ratio 0.333) drops below MIN_SCORE and stops matching at all, while a merely
+# non-head-noun match ("TOPS Bacon Chips", 0.333) survives at 0.233 and still
+# ranks below the real thing (0.333) - it may be the only bacon a store stocks.
+COMPOSITE_PENALTY = 0.4
+NON_HEAD_PENALTY = 0.7
+
+
+def token_sequences(text):
+    """(normalized tokens in order, raw lowercase words in order).
+
+    The normalized list is what the head-noun check needs; the raw list is what
+    the connective check needs, because _STRIP_WORDS removes exactly the words
+    ("with", "and", "in") that carry the signal. Both come from one pass over the
+    same lowercased/synonym-rewritten text so they cannot disagree about what the
+    product name was.
+    """
+    if not text:
+        return [], []
+    lowered = text.lower().replace("&", " and ")
+    for pattern, replacement in _PHRASE_SYNONYMS:
+        lowered = pattern.sub(replacement, lowered)
+
+    raw = [w for w in _WORD_SPLIT.split(lowered) if w]
+    seq = []
+    for word in raw:
+        if _PURE_NUMBER.match(word):
+            continue
+        if word in _STRIP_WORDS or word in _UNIT_WORDS:
+            continue
+        stemmed = _stem(word)
+        if stemmed in _STRIP_WORDS or stemmed in _UNIT_WORDS:
+            continue
+        seq.append(_TOKEN_SYNONYMS.get(stemmed, stemmed))
+    return seq, raw
+
+
+def _is_composite(query_tokens, raw_seq):
+    """True when a query token appears immediately after a connective AND not
+    before it - i.e. the product is a composite that merely contains the queried
+    thing rather than being it.
+
+    The "and not before it" half is what keeps canned goods working. "Cento Minced
+    Clams in Clam Juice" has clams on both sides of "in": it IS clams, packed in
+    juice. Treating that as a composite dropped 26 live rows including "Full
+    Circle Tomatoes in Tomato Juice" and "Dole Pineapple Tidbits in Pineapple
+    Juice". "Breakfast Pizza With Bacon" has bacon only after the connective, so
+    it is still correctly a pizza.
+
+    Checks each following word raw and normalized, because query tokens are
+    stemmed/synonym-mapped and raw_seq is not.
+    """
+    first = None
+    for i, word in enumerate(raw_seq[:-1]):
+        if word in _INGREDIENT_CONNECTIVES:
+            first = i
+            break
+    if first is None:
+        return False
+
+    def norm(word):
+        stemmed = _stem(word)
+        return _TOKEN_SYNONYMS.get(stemmed, stemmed)
+
+    before = {norm(w) for w in raw_seq[:first]} | set(raw_seq[:first])
+    if query_tokens & before:
+        return False
+
+    for i in range(first, len(raw_seq) - 1):
+        if raw_seq[i] not in _INGREDIENT_CONNECTIVES:
+            continue
+        nxt = raw_seq[i + 1]
+        if nxt in query_tokens or norm(nxt) in query_tokens:
+            return True
+    return False
 
 
 # --- Manual aliases (override/fallback layer) --------------------------
@@ -285,6 +414,30 @@ LOW_CONFIDENCE_SCORE = 0.45
 # staying reactive is low and matches how MANUAL_ALIASES already treats the
 # same kind of miss.
 DISQUALIFYING_MODIFIERS = {
+    # Added from misses measured on the live 21,574-row catalog for the query
+    # "milk" (#99): "Goya Coconut Milk" and "Carnation Evaporated Milk" both
+    # scored 0.333, tied with real milk, and where_to_buy then picks the cheapest
+    # per store - so coconut milk could win on price and be presented as the
+    # answer to "milk".
+    #
+    # The structural word-order rules above could not catch these: in both names
+    # "milk" IS the head noun and there is no connective. Coconut milk and
+    # evaporated milk are genuinely milk-shaped products that simply aren't what
+    # someone writing "milk" on a grocery list means, and no positional signal
+    # distinguishes them. This is the case a lexicon is actually for.
+    #
+    # Only applied for single-token queries (see score_match), so a list that says
+    # "coconut milk" or "evaporated milk" still matches those products exactly.
+    #
+    # Entries beyond the two observed are the same class - plant-based or
+    # shelf-stable products that are not drinking milk - included because leaving
+    # them out means each one gets discovered by a wrong price rather than by a
+    # test. Deliberately EXCLUDED: "chocolate" and "goat", which are real drinking
+    # milk to most people, so rejecting them would be a wrong answer of its own.
+    "milk": {
+        "coconut", "evaporated", "condensed", "powdered", "dried",
+        "almond", "soy", "oat", "rice", "cashew", "hazelnut", "macadamia",
+    },
     "butter": {
         "peanut", "almond", "cashew", "sunflower", "cocoa", "shea", "apple",
         "cookie", "cookies", "cracker", "crackers", "popcorn", "spray",
@@ -317,11 +470,19 @@ DISQUALIFYING_MODIFIERS = {
 }
 
 
-def score_match(query_tokens, product_tokens):
+def score_match(query_tokens, product_tokens, token_seq=None, raw_seq=None):
     """None if product_tokens doesn't contain every query token (i.e. not a
     match at all) or is disqualified by DISQUALIFYING_MODIFIERS; otherwise a
     0-1 closeness score - higher means the product name is "mostly" the
-    query with little extra noise."""
+    query with little extra noise.
+
+    token_seq/raw_seq are the ordered forms from token_sequences() and are
+    OPTIONAL: without them the word-order penalties are skipped and the score is
+    exactly the old ratio. That keeps every existing caller and every hand-built
+    catalog fixture working, and means a row that somehow lacks the sequences
+    degrades to the previous behaviour rather than crashing or silently scoring
+    zero. See #99 for why the penalties exist.
+    """
     if not query_tokens or not product_tokens:
         return None
     if not query_tokens.issubset(product_tokens):
@@ -331,8 +492,39 @@ def score_match(query_tokens, product_tokens):
         if disqualifiers and product_tokens & disqualifiers:
             return None
     ratio = len(query_tokens) / len(product_tokens)
+
+    # ELIGIBILITY is decided on the raw ratio, BEFORE any word-order penalty.
+    # Applying MIN_SCORE after multiplying turned the penalty into a ban: a
+    # 1-token query against a 4+-token product scores 0.25 x 0.7 = 0.175, under
+    # MIN_SCORE, so the product stopped matching at all. Measured on the live
+    # 21,812-row catalog that silently dropped correct matches wholesale - for
+    # "cheese", 241 of the 395 rows that matched on master returned None,
+    # including "Athenos Traditional Feta Cheese Chunk" and "Hormel Real Crumbled
+    # Bacon, Original". A match that vanishes is worse than one that ranks low,
+    # because where_to_buy simply omits it from the totals and nothing says so.
     if ratio < MIN_SCORE:
         return None
+
+    # Both penalties apply to SINGLE-TOKEN queries only, which is the scope #99
+    # describes and the same guard DISQUALIFYING_MODIFIERS already uses. Applying
+    # them to multi-word queries was actively harmful: _PHRASE_SYNONYMS rewrites
+    # "Half & Half" to "half and half", so the query's OWN connective made the
+    # composite rule fire against its exact match, and "half and half" resolved to
+    # "Southern Grove Pecan Halves" at all three stores - a confident wrong price,
+    # the precise failure #99 exists to prevent. "macaroni and cheese", "bread and
+    # butter pickles" and MANUAL_ALIASES["pb&j"] broke the same way.
+    if len(query_tokens) == 1:
+        score = ratio
+        if raw_seq and _is_composite(query_tokens, raw_seq):
+            score *= COMPOSITE_PENALTY
+        # The head noun is the last significant token. No penalty when the product
+        # name ends in a query token, the normal English grocery shape ("Wellsley
+        # Farms Bacon"); penalized when it does not, because then the product is
+        # something else that merely mentions the query ("TOPS Bacon Chips" is
+        # chips). A ranking signal only - see the eligibility note above.
+        if token_seq and not (query_tokens & {token_seq[-1]}):
+            score *= NON_HEAD_PENALTY
+        return score
     return ratio
 
 
@@ -356,7 +548,14 @@ def load_catalog(cur):
     rows = cur.fetchall()
     catalog = []
     for row in rows:
-        tokens = normalize_tokens(row["product"])
+        # One pass, not two. token_sequences() recomputes exactly what
+        # normalize_tokens() does, and calling both doubled catalog
+        # normalization: measured 551ms -> 1,079ms on the live 21,812-row catalog,
+        # i.e. +528ms on every /list and /list/where-to-buy request.
+        # frozenset(seq) is identical to normalize_tokens(product) - verified
+        # equal across all 21,812 rows, 0 mismatches.
+        seq, raw = token_sequences(row["product"])
+        tokens = frozenset(seq)
         if not tokens:
             # Rows dropped here never reach the catalog, so a caller deriving
             # anything from the catalog sees a subset. For matching that is the
@@ -368,6 +567,11 @@ def load_catalog(cur):
             continue
         entry = dict(row)
         entry["_tokens"] = tokens
+        # Ordered forms for score_match's word-order penalties (#99). Computed
+        # here rather than inside match_item because match_item runs per list item
+        # against the whole catalog: once per row at load time is ~20k
+        # computations instead of ~20k per item.
+        entry["_token_seq"], entry["_raw_seq"] = seq, raw
         catalog.append(entry)
     return catalog
 
@@ -384,7 +588,13 @@ def match_item(catalog, item_name):
         if not query_tokens:
             continue
         for row in catalog:
-            score = score_match(query_tokens, row["_tokens"])
+            # .get() rather than [] so a hand-built catalog fixture (or any caller
+            # that predates #99) still works - score_match treats missing
+            # sequences as "skip the word-order penalties".
+            score = score_match(
+                query_tokens, row["_tokens"],
+                row.get("_token_seq"), row.get("_raw_seq"),
+            )
             if score is None:
                 continue
             key = (row["store"], row["product"])
@@ -393,7 +603,11 @@ def match_item(catalog, item_name):
 
     matches = []
     for score, row in best_by_key.values():
-        match = {k: v for k, v in row.items() if k != "_tokens"}
+        # Strip every underscore-prefixed working field rather than a hardcoded
+        # list: _tokens, _token_seq and _raw_seq are the matcher's scratch state
+        # and must not reach templates or any future serialization. A name list
+        # here is how one gets forgotten the next time a field is added.
+        match = {k: v for k, v in row.items() if not k.startswith("_")}
         match["match_score"] = score
         matches.append(match)
     matches.sort(key=lambda m: -m["match_score"])

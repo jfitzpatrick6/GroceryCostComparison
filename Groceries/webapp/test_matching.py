@@ -192,10 +192,17 @@ SAMPLE_CATALOG_ROWS = [
 def _build_catalog():
     catalog = []
     for product, store, price in SAMPLE_CATALOG_ROWS:
-        tokens = matching.normalize_tokens(product)
+        # Built the way matching.load_catalog() builds it, including the ordered
+        # sequences added in #99. Omitting them made every test here take
+        # score_match's optional-parameter path, so the word-order penalties -
+        # the whole point of #99 - were never exercised by this suite at all.
+        # Review caught that; with the sequences present these fixtures test the
+        # code that actually runs.
+        seq, raw = matching.token_sequences(product)
         catalog.append({
             "product": product, "store": store, "price": price, "size": "",
-            "unit_price": price, "unit": "each", "_tokens": tokens,
+            "unit_price": price, "unit": "each",
+            "_tokens": frozenset(seq), "_token_seq": seq, "_raw_seq": raw,
         })
     return catalog
 
