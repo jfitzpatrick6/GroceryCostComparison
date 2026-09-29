@@ -1115,7 +1115,10 @@ def bulk_set_pantry():
         except (ValueError, ZeroDivisionError):
             problems.append(line)
             continue
-        if not name:
+        # A name that still starts like a quantity means the amount wasn't
+        # understood ("1-2 cups flour", "2 lb" with no item): refuse it rather
+        # than store a junk item under a quantity-shaped name.
+        if not name or re.match(r"[\d./½⅓⅔¼¾⅛-]", name):
             problems.append(line)
             continue
         rows.append((name, amount, unit))
@@ -1329,11 +1332,41 @@ _UNIT_CANONICAL = {
 }
 
 
+# Unicode vulgar fractions, as pasted from recipe sites ("½ cup sugar").
+_UNICODE_FRACTIONS = {"½": 0.5, "⅓": 1 / 3, "⅔": 2 / 3, "¼": 0.25, "¾": 0.75, "⅛": 0.125}
+_MIXED_NUMBER = re.compile(r"^\s*(\d+)?\s*(?:(\d+)\s*/\s*(\d+)|([½⅓⅔¼¾⅛]))(?=\s|[a-z]|$)", re.IGNORECASE)
+
+
+def _normalize_leading_amount(line):
+    """"1 1/2 cups" -> "1.5 cups", "½ cup" -> "0.5 cup", "2½ lb" -> "2.5 lb".
+
+    Without this the line regex stopped at the first space, so "1 1/2 cups flour"
+    parsed as amount 1 and the name "1/2 cups flour" - a wrong amount saved
+    silently, which the planner then subtracts from a shopping list (review of
+    #75). A plain "1/2 cup" is left as written, as it always was. A range
+    ("1-2 cups") is deliberately NOT collapsed to either end; the caller sees
+    its leftovers and refuses it where an amount matters.
+    """
+    m = _MIXED_NUMBER.match(line)
+    if not m:
+        return line
+    whole, num, den, uni = m.groups()
+    if num and not whole:
+        return line
+    try:
+        frac = int(num) / int(den) if num else _UNICODE_FRACTIONS[uni]
+    except ZeroDivisionError:
+        return line
+    value = (int(whole) if whole else 0) + frac
+    return f"{round(value, 4):g}" + line[m.end():]
+
+
 def parse_ingredient_line(line):
     """Best-effort split of a free-text ingredient line into (amount, unit,
     name). Falls back to putting the whole line in `name` if it doesn't
     look like "<amount> <unit> <name>" - this is deliberately simple
     (recipe-unit conversion is #36's job, not this)."""
+    line = _normalize_leading_amount(line)
     match = _INGREDIENT_LINE.match(line)
     amount, unit, name = match.groups()
     if not name:
@@ -1534,7 +1567,9 @@ def _servings_or_none(text):
         value = int(str(text).strip())
     except (TypeError, ValueError):
         return None
-    return value if value > 0 else None
+    # Capped: "Yield: 99999999999" overflows INTEGER, and one bad row would
+    # roll back the whole import batch.
+    return value if 0 < value <= 1000 else None
 
 
 @app.route("/recipes/import", methods=["GET", "POST"])

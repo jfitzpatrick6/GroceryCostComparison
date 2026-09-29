@@ -26,6 +26,26 @@ class PantryAmountTests(unittest.TestCase):
                 app.parse_pantry_amount(bad)
 
 
+class LineParsingTests(unittest.TestCase):
+    """Review of #75: mixed numbers used to be misread silently."""
+
+    def test_mixed_numbers_and_unicode_fractions(self):
+        self.assertEqual(app.parse_ingredient_line("1 1/2 cups flour"), ("1.5", "cup", "flour"))
+        self.assertEqual(app.parse_ingredient_line("2 1/2 lb chicken"), ("2.5", "lb", "chicken"))
+        self.assertEqual(app.parse_ingredient_line("½ cup sugar"), ("0.5", "cup", "sugar"))
+        self.assertEqual(app.parse_ingredient_line("2½ lb beef"), ("2.5", "lb", "beef"))
+
+    def test_existing_shapes_unchanged(self):
+        self.assertEqual(app.parse_ingredient_line("1/2 cup rice"), ("1/2", "cup", "rice"))
+        self.assertEqual(app.parse_ingredient_line("2 lb ground beef"), ("2", "lb", "ground beef"))
+        self.assertEqual(app.parse_ingredient_line("salt"), (None, None, "salt"))
+        self.assertEqual(app.parse_ingredient_line("12 eggs"), ("12", None, "eggs"))
+
+    def test_a_range_is_not_collapsed(self):
+        amount, _, name = app.parse_ingredient_line("1-2 cups flour")
+        self.assertTrue(name.startswith("-") or amount is None, (amount, name))
+
+
 class RecipeSplitTests(unittest.TestCase):
     PASTE = """Taco Night
 Serves 4
@@ -58,7 +78,7 @@ Ingredients
 
     def test_servings_never_500s_the_insert(self):
         self.assertEqual(app._servings_or_none("4"), 4)
-        for bad in ["4-6", "serves 4", "", None, "0", "-2"]:
+        for bad in ["4-6", "serves 4", "", None, "0", "-2", "99999999999"]:
             self.assertIsNone(app._servings_or_none(bad), bad)
 
 
