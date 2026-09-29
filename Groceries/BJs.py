@@ -113,7 +113,12 @@ def bjs_category(group_ids):
             best = parts
     if not best:
         return None
-    return " > ".join(p.replace("-", " ").replace(" and ", " & ").title() for p in best[1:])
+    # Word-by-word capitalize, not str.title(): title() capitalizes after an
+    # apostrophe ("kid's" -> "Kid'S") - review of #114.
+    return " > ".join(
+        " ".join(w[:1].upper() + w[1:] for w in p.replace("-", " ").replace(" and ", " & ").split())
+        for p in best[1:]
+    )
 
 # A product this club does not price. Reason it gets its own label rather than
 # falling into the generic error bucket: it is a *catalogue* fact (BJs lists it

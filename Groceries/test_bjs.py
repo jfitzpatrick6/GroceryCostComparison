@@ -481,7 +481,11 @@ class CategoryTests(unittest.TestCase):
             "grocery>wellsley-farms>wellsley-farms-beverages", "grocery>beverages>wellsley-farms-beverages",
             "grocery>beverages>water", "seasonal>game-day>game-day-foods>game-day-beverages",
         ]
-        self.assertIn(BJs.bjs_category(water), {"Beverages > Water", "Beverages > Wellsley Farms Beverages"})
+        # Two depth-3 departments tie; the first in API order wins.
+        self.assertEqual(BJs.bjs_category(water), "Beverages > Wellsley Farms Beverages")
+
+    def test_apostrophes_stay_lowercase(self):
+        self.assertEqual(BJs.bjs_category(["grocery>kid's-snacks"]), "Kid's Snacks")
 
     def test_cross_cutting_collections_are_not_departments(self):
         jerky = ["grocery>protein-and-nutrition>protein-snacks", "grocery>snacks>beef-jerky-and-meat-snacks",
