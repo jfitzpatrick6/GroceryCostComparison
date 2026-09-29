@@ -510,6 +510,9 @@ tr.is-checked .item-name { text-decoration: line-through; }
 .stack > * + * { margin-top: var(--space-4); }
 .row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
 .row--tight { gap: var(--space-1); }
+/* Centres a button group. Used by the error page, where the actions are the only
+   thing on the card and left-aligning them looks broken. */
+.row--center { justify-content: center; }
 .spacer { flex: 1 1 auto; }
 .muted { color: var(--text-muted); }
 .faint { color: var(--text-faint); }

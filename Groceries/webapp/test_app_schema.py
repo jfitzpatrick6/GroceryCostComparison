@@ -50,6 +50,14 @@ _ALTER_TABLE = re.compile(r"ALTER\s+TABLE\s+(\w+)", re.IGNORECASE)
 # invariant test below; deliberately matches the four keywords that introduce a
 # table name in this codebase's SQL rather than trying to be a SQL parser.
 _SQL_TABLE = re.compile(r"\b(?:FROM|INTO|UPDATE|JOIN)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
+# What makes a string literal look like SQL rather than prose. Strict on purpose:
+# bare UPDATE/SELECT words appear in ordinary English, so each alternative has to
+# carry enough structure to be unambiguous.
+_SQL_STATEMENT = re.compile(
+    r"\b(?:SELECT\b|INSERT\s+INTO\b|DELETE\s+FROM\b|CREATE\s+TABLE\b"
+    r"|ALTER\s+TABLE\b|UPDATE\s+\w+\s+SET\b)",
+    re.IGNORECASE,
+)
 # Words that can legitimately follow FROM/INTO/UPDATE/JOIN in real SQL without
 # being a table name. Kept minimal and explicit on purpose: the point of the
 # invariant test is to notice a table nobody creates, so silently swallowing
@@ -104,6 +112,25 @@ def _tables_in_source(source):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
             continue
         if id(node) in docstrings:
+            continue
+        # Only literals that actually look like a statement. An earlier version
+        # had no gate and picked up eighteen table names out of English prose in
+        # comments; the gate was then removed because it also skipped SQL built by
+        # concatenation, where the keyword and the table name land in different
+        # literals - a real blind spot.
+        #
+        # Reinstating it is safe NOW, and only now, because
+        # test_no_execute_builds_sql_by_concatenation_or_percent_formatting
+        # forbids exactly that shape: every execute() argument must be a literal,
+        # an f-string, or a name holding one. So a literal with no statement
+        # keyword genuinely is not SQL. Prose strings are the thing that broke
+        # this: _ERROR_COPY's "reached this from a link" yielded a table named
+        # "a" (#68).
+        #
+        # The keyword set is deliberately strict - `UPDATE` alone is not enough,
+        # since "Update the pantry" is ordinary English. It has to be
+        # UPDATE <table> SET.
+        if not _SQL_STATEMENT.search(node.value):
             continue
         found.update(m.lower() for m in _SQL_TABLE.findall(node.value))
     # `SET` is captured by the UPDATE branch on `ON CONFLICT ... DO UPDATE SET`,
