@@ -16,11 +16,24 @@ import unittest
 import app
 import migrations
 
-_DDL = re.compile(r"\b(CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+(TABLE|CONSTRAINT|COLUMN))\b", re.I)
+_DDL = re.compile(
+    r"\b(CREATE\s+(TABLE|(UNIQUE\s+)?INDEX|(OR\s+REPLACE\s+)?VIEW)|ALTER\s+TABLE"
+    r"|DROP\s+(TABLE|CONSTRAINT|COLUMN|VIEW|INDEX)|TRUNCATE)\b",
+    re.I,
+)
 
 
 def _functions(tree):
-    return [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    return [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _called_name(call):
+    """Name of the function a Call invokes, for both f(...) and mod.f(...)."""
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return ""
 
 
 class RequestPathGuards(unittest.TestCase):
@@ -33,9 +46,8 @@ class RequestPathGuards(unittest.TestCase):
             if fn.name.startswith("ensure_"):
                 continue
             for node in ast.walk(fn):
-                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                        and node.func.id.startswith("ensure_")):
-                    offenders.append(f"{fn.name}:{node.lineno} calls {node.func.id}")
+                if isinstance(node, ast.Call) and _called_name(node).startswith("ensure_"):
+                    offenders.append(f"{fn.name}:{node.lineno} calls {_called_name(node)}")
         self.assertEqual(offenders, [], "schema changes belong in migrations.py (#66)")
 
     def test_no_ddl_outside_schema_functions(self):

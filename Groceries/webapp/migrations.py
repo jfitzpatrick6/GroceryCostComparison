@@ -1,16 +1,17 @@
 """Versioned schema migrations for the webapp's own tables (#66).
 
-Before this, ten ensure_*_table() functions ran from ~40 request handlers and a
-context processor, so every page view executed CREATE/ALTER TABLE (ACCESS
+Before this, nine ensure_*_table() functions (plus ensure_app_schema, which
+calls them) ran from 37 request handlers and a context processor, so every page view executed CREATE/ALTER TABLE (ACCESS
 EXCLUSIVE locks) and /planner re-ran a constraint swap on meal_plan_slots. The
 schema now changes in exactly one place, once, before gunicorn starts:
 init_schema.py -> migrate().
 
 How it works: `schema_version` records which numbered migrations a database has
-had. migrate() applies the missing ones in order, each recorded in the same
-transaction as its DDL, so a failure leaves the version where it was and the
-next start retries it. A transaction-scoped advisory lock serialises concurrent
-starters (two containers, or someone running init_schema.py by hand).
+had. migrate() applies the missing ones in order, all in ONE transaction with
+their version rows, so a failure in any of them rolls back the whole batch and
+the version stays where it was; the next start retries from there. A
+transaction-scoped advisory lock serialises concurrent starters (two
+containers, or someone running init_schema.py by hand).
 
 Migration 1 is the baseline: the ensure_*_table() functions exactly as they
 stood at #66. They were written to be idempotent against every schema they had

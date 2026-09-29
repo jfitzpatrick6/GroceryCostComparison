@@ -860,13 +860,8 @@ def add_pinned_list_item():
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                # No ensure_list_table() here, deliberately: CONTRIBUTING §8
-                # forbids adding an ensure_* call site in a request handler, and
-                # each one takes an AccessExclusiveLock on every request even when
-                # the columns already exist. init_schema.py creates every
-                # app-owned table at startup (#82), so the table is guaranteed to
-                # exist by the time any request runs. #66 removes the pre-existing
-                # call sites; this one simply does not add another.
+                # No schema work here: migrations.py creates every app table at
+                # startup (#66), before any request runs.
                 cur.execute(
                     "INSERT INTO grocery_list_items "
                     "(name, qty, added_by, pinned_product, pinned_store) "
@@ -1525,22 +1520,9 @@ def ensure_planner_table(cur):
     # other routes (#80). The dev database had been populated for weeks, which is
     # why this was never hit.
     #
-    # The dependency is declared here, beside the FK that creates it, rather than
-    # by reordering calls in the nine affected routes: an ordering invariant
-    # spread across call sites is one new route away from breaking again. This is
-    # a deliberate exception to CONTRIBUTING §8's "never add a new
-    # ensure_*_table() call site" - that rule exists to stop DDL being scattered
-    # through request handlers, and putting a schema dependency inside the
-    # function that declares the FK is the opposite of scattering. #66 removes
-    # the whole category by moving schema creation into ordered migrations.
-    #
-    # Idempotent: ensure_recipes_tables is CREATE TABLE IF NOT EXISTS, so once
-    # `recipes` exists this changes nothing. It is NOT free, though - verified
-    # on postgres:16 that CREATE TABLE IF NOT EXISTS against an existing table
-    # still takes an ACCESS EXCLUSIVE lock, so this adds two such locks per
-    # request to the nine routes that call ensure_planner_table. That cost is
-    # #66's to remove (schema created once at startup, not per request); it is
-    # not new to this change, which only moved where the dependency is stated.
+    # The dependency is declared here, beside the FK that creates it, so this
+    # function is correct on its own whatever order it is called in. Since #66
+    # it only runs as part of migration 1 (migrations.py), once, at startup.
     ensure_recipes_tables(cur)
     # Dinner only for v1 ("dinner first" per #28) - `meal` column exists so
     # breakfast/lunch can be added later without a schema change, but the
@@ -1568,8 +1550,8 @@ def ensure_planner_table(cur):
     # A slot used to hold exactly one recipe (unique per week/day/meal). #44
     # lets a slot hold several recipes (e.g. burgers + buns), so recipe_id
     # has to join the uniqueness instead of being excluded from it - swap
-    # the old constraint for the new one, idempotently, since this runs on
-    # every request rather than as a one-off migration.
+    # the old constraint for the new one, idempotently - it was written when
+    # this ran on every request; since #66 it runs once, in migration 1.
     cur.execute("""
         DO $$
         BEGIN
@@ -2666,11 +2648,8 @@ def ensure_app_schema(cur):
     it was observed during #61's concurrency testing as DuplicateTable and
     UniqueViolation on pg_class_relname_nsp_index.
 
-    This does NOT remove the per-request ensure_* calls; #66 does that. Once
-    this has run they become semantic no-ops, but they still take ACCESS
-    EXCLUSIVE locks on every request - the cost #66 exists to eliminate. Landing
-    it in that order keeps this change small enough to review and leaves #66 a
-    pure deletion.
+    Since #66 this is migration 1 in migrations.py, not something init_schema.py
+    calls directly, and nothing on the request path calls any ensure_* function.
 
     Order matters: meal_plan_slots.recipe_id REFERENCES recipes(id), so
     ensure_recipes_tables runs before ensure_planner_table. The rest have no
