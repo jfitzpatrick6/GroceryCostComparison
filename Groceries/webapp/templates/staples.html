@@ -9,6 +9,17 @@
     the things you buy every week regardless of what's planned.
 </p>
 
+{# Straight to the per-store search (#75, #113): every result there has a Pin
+   button, so adding a staple is search -> Pin, and the product pinned is the
+   exact store listing where-to-buy will price, not a retyped name. #}
+<form method="get" action="/prices" class="form-row">
+    <div class="field">
+        <label class="label" for="s-q">Find something to pin</label>
+        <input type="search" id="s-q" name="q" placeholder="e.g. milk, eggs, coffee" autocomplete="off">
+    </div>
+    <button type="submit" class="btn btn--primary">Search all stores</button>
+</form>
+
 <div class="table-wrap">
     <table>
         <thead>
@@ -47,9 +58,9 @@
                     <div class="empty__glyph" aria-hidden="true">&#128204;</div>
                     <div class="empty__title">Nothing pinned yet</div>
                     <p>Staples are the things you buy every week &mdash; milk, eggs, coffee,
-                    whatever yours are. Pin them from <a href="/prices">Prices</a> and this page
-                    becomes a one-glance cross-store comparison of just those.</p>
-                    <a class="btn btn--primary" href="/prices">Browse prices to pin</a>
+                    whatever yours are. Search for one above, press <strong>Pin</strong> on the
+                    product you actually buy at each store, and this page becomes a one-glance
+                    cross-store comparison of just those.</p>
                 </div>
             </td></tr>
             {% endfor %}

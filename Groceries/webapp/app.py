@@ -1023,38 +1023,122 @@ def set_pantry_threshold():
     return redirect(url_for("pantry"))
 
 
+def parse_pantry_amount(text):
+    """Pantry amount text -> a number, or None when blank. Raises ValueError for
+    anything else.
+
+    pantry_items.amount is NUMERIC, and the form used to pass raw text straight
+    through, so typing "1/2" returned a 500 (#75, found while adding bulk entry).
+    Fractions are converted; anything unreadable is refused rather than guessed,
+    because a pantry amount the planner subtracts from the shopping list is
+    exactly the kind of number that must not be made up.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    if "/" in text:
+        num, _, den = text.partition("/")
+        value = float(num) / float(den)
+    else:
+        value = float(text)
+    if value < 0 or math.isinf(value) or math.isnan(value):
+        raise ValueError(text)
+    return round(value, 4)
+
+
+def _set_pantry_item(cur, name, amount, unit):
+    """Set (not add to) one pantry item, matched case-insensitively by name.
+    Returns True if it created a new row."""
+    cur.execute("SELECT id FROM pantry_items WHERE lower(name) = lower(%s)", (name,))
+    existing = cur.fetchone()
+    if existing:
+        cur.execute(
+            "UPDATE pantry_items SET amount = %s, unit = %s, "
+            "updated_at = now(), updated_by = %s WHERE id = %s",
+            (amount, unit, active_profile(), existing[0]),
+        )
+        return False
+    cur.execute(
+        "INSERT INTO pantry_items (name, amount, unit, updated_by) VALUES (%s, %s, %s, %s)",
+        (name, amount, unit, active_profile()),
+    )
+    return True
+
+
 @app.route("/pantry/set", methods=["POST"])
 def set_pantry_item():
     name = request.form.get("name", "").strip()
-    amount = request.form.get("amount") or None
     unit = request.form.get("unit", "").strip() or None
+    try:
+        amount = parse_pantry_amount(request.form.get("amount"))
+    except (ValueError, ZeroDivisionError):
+        flash(f"\"{request.form.get('amount')}\" isn't an amount. Use a number like 2, 0.5 or 1/2.", "error")
+        return redirect(url_for("pantry"))
     if name:
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM pantry_items WHERE lower(name) = lower(%s)", (name,))
-                existing = cur.fetchone()
-                if existing:
-                    cur.execute(
-                        "UPDATE pantry_items SET amount = %s, unit = %s, "
-                        "updated_at = now(), updated_by = %s WHERE id = %s",
-                        (amount, unit, active_profile(), existing[0]),
-                    )
-                else:
-                    cur.execute(
-                        "INSERT INTO pantry_items (name, amount, unit, updated_by) VALUES (%s, %s, %s, %s)",
-                        (name, amount, unit, active_profile()),
-                    )
+                _set_pantry_item(cur, name, amount, unit)
             conn.commit()
         finally:
             conn.close()
         # "set", not "added" - this route replaces the amount rather than
         # incrementing it, and saying "added 2 cups" when the pantry now holds
         # exactly 2 cups would be a lie about the semantics.
-        qty = " ".join(str(x) for x in (amount, unit) if x) or "no amount"
+        qty = " ".join(f"{x:g}" if isinstance(x, float) else str(x) for x in (amount, unit) if x) or "no amount"
         flash(f"Pantry: {name} set to {qty}.", "success")
     else:
         flash("Enter an item name to save it to the pantry.", "error")
+    return redirect(url_for("pantry"))
+
+
+@app.route("/pantry/bulk", methods=["POST"])
+def bulk_set_pantry():
+    """Many pantry items at once, one per line, in the recipe grammar:
+    "2 lb chicken breast", "1/2 cup rice", "salt" (#75).
+
+    Getting a kitchen into the app one form submit at a time was the adoption
+    cliff #75 describes: at zero pantry rows the planner's pantry logic never
+    runs. Lines that can't be read are listed back, not guessed at, and nothing
+    else on the paste is lost because of them.
+    """
+    created = updated = 0
+    problems = []
+    rows = []
+    for raw in request.form.get("lines", "").splitlines():
+        line = raw.strip().lstrip("-*•").strip()
+        if not line:
+            continue
+        amount_text, unit, name = parse_ingredient_line(line)
+        try:
+            amount = parse_pantry_amount(amount_text)
+        except (ValueError, ZeroDivisionError):
+            problems.append(line)
+            continue
+        if not name:
+            problems.append(line)
+            continue
+        rows.append((name, amount, unit))
+    if rows:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                for name, amount, unit in rows:
+                    if _set_pantry_item(cur, name, amount, unit):
+                        created += 1
+                    else:
+                        updated += 1
+            conn.commit()
+        finally:
+            conn.close()
+    if created or updated:
+        flash(f"Pantry: {created} added, {updated} updated.", "success")
+    if problems:
+        flash("Couldn't read " + ", ".join(f"\"{p}\"" for p in problems[:5])
+              + (f" and {len(problems) - 5} more" if len(problems) > 5 else "")
+              + " - nothing was saved for those lines.", "warning")
+    if not rows and not problems:
+        flash("Paste one item per line, like \"2 lb chicken breast\".", "error")
     return redirect(url_for("pantry"))
 
 
@@ -1415,6 +1499,87 @@ def new_recipe():
     finally:
         conn.close()
     return redirect(url_for("view_recipe", recipe_id=recipe_id))
+
+
+# --- #75: several recipes in one paste --------------------------------------
+#
+# #27's paste box takes one recipe and pre-fills the form; moving a household's
+# existing collection in was one paste, one review, one save per recipe - the
+# adoption cliff #75 describes. This splits a paste on lines of "---", runs each
+# chunk through the same parse_pasted_recipe(), and shows every result as an
+# editable card with an include checkbox. Still never a silent save: nothing is
+# written until "Save" on the preview, which is #27's rule applied to a batch.
+_RECIPE_SEPARATOR = re.compile(r"^\s*-{3,}\s*$", re.MULTILINE)
+
+
+def split_recipe_paste(text):
+    """Pasted text -> parsed recipes, one per "---"-separated chunk, blank
+    chunks dropped."""
+    recipes = []
+    for chunk in _RECIPE_SEPARATOR.split(text or ""):
+        if not chunk.strip():
+            continue
+        name, servings, notes, ingredients_text = parse_pasted_recipe(chunk)
+        recipes.append({
+            "name": name, "servings": servings, "notes": notes,
+            "ingredients_text": ingredients_text,
+            "ingredient_count": len([x for x in ingredients_text.splitlines() if x.strip()]),
+        })
+    return recipes
+
+
+def _servings_or_none(text):
+    """recipes.servings is INTEGER; "4-6" or "serves 4" must not 500 the save."""
+    try:
+        value = int(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+@app.route("/recipes/import", methods=["GET", "POST"])
+def import_recipes():
+    if request.method == "GET":
+        return render_template("recipe_import.html", recipes=None, pasted="")
+    pasted = request.form.get("pasted", "")
+    recipes = split_recipe_paste(pasted)
+    if not recipes:
+        flash("Nothing to import - paste one or more recipes, separated by a line of ---.", "error")
+    return render_template("recipe_import.html", recipes=recipes, pasted=pasted)
+
+
+@app.route("/recipes/import/save", methods=["POST"])
+def save_imported_recipes():
+    names = request.form.getlist("name")
+    servings = request.form.getlist("servings")
+    notes = request.form.getlist("notes")
+    ingredients = request.form.getlist("ingredients")
+    include = set(request.form.getlist("include"))
+    saved, skipped = [], 0
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            for i, name in enumerate(names):
+                name = name.strip()
+                if str(i) not in include or not name:
+                    skipped += 1
+                    continue
+                cur.execute(
+                    "INSERT INTO recipes (name, notes, servings) VALUES (%s, %s, %s) RETURNING id",
+                    (name, (notes[i] if i < len(notes) else "").strip() or None,
+                     _servings_or_none(servings[i] if i < len(servings) else None)),
+                )
+                _save_ingredients(cur, cur.fetchone()[0], ingredients[i] if i < len(ingredients) else "")
+                saved.append(name)
+        conn.commit()
+    finally:
+        conn.close()
+    if saved:
+        flash(f"Saved {len(saved)} recipe(s): {', '.join(saved[:5])}"
+              + (f" and {len(saved) - 5} more" if len(saved) > 5 else "") + ".", "success")
+    if skipped:
+        flash(f"{skipped} left out (unticked or without a name).", "info")
+    return redirect(url_for("recipes"))
 
 
 @app.route("/recipes/<int:recipe_id>")

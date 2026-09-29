@@ -29,6 +29,22 @@
             </div>
             <button type="submit" class="btn btn--primary">Save</button>
         </form>
+        {# Bulk entry (#75): an empty pantry means the planner's pantry logic never
+           runs, and one item per form submit is how it stays empty. #}
+        <details class="bulk"{% if not items %} open{% endif %}>
+            <summary>Add many at once</summary>
+            <form method="post" action="/pantry/bulk" class="stack">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label class="label" for="p-bulk">One item per line &mdash; amount, unit, name</label>
+                <textarea id="p-bulk" name="lines" rows="8" placeholder="2 lb chicken breast
+5 lb flour
+1/2 cup rice
+12 each eggs
+salt"></textarea>
+                <p class="faint small">Anything already in the pantry is <strong>set</strong> to the new amount, not added to. A line without an amount is saved with no amount.</p>
+                <div><button type="submit" class="btn btn--primary">Add all</button></div>
+            </form>
+        </details>
     </div>
 
     <div class="table-wrap">

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Import recipes - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<a class="backlink" href="/recipes">&laquo; Recipes</a>
+<div class="page-head">
+    <h1>Import several recipes</h1>
+</div>
+
+{% if recipes %}
+<p class="subtitle">
+    Here's what was found. Nothing is saved yet &mdash; fix anything that looks wrong,
+    untick what you don't want, then save.
+</p>
+<form method="post" action="/recipes/import/save" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% for r in recipes %}
+    <section class="card">
+        <label class="row row--tight">
+            <input type="checkbox" name="include" value="{{ loop.index0 }}" {% if r.name and r.ingredient_count %}checked{% endif %}>
+            <span class="card__title">Recipe {{ loop.index }}</span>
+            {% if not r.ingredient_count %}<span class="badge badge--warn">no ingredients found</span>{% endif %}
+        </label>
+        <div class="form-row">
+            <div class="field">
+                <label class="label" for="n{{ loop.index0 }}">Name</label>
+                <input type="text" id="n{{ loop.index0 }}" name="name" value="{{ r.name }}">
+            </div>
+            <div class="field">
+                <label class="label" for="s{{ loop.index0 }}">Servings</label>
+                <input type="text" id="s{{ loop.index0 }}" name="servings" value="{{ r.servings or '' }}" inputmode="numeric">
+            </div>
+        </div>
+        <label class="label" for="i{{ loop.index0 }}">Ingredients ({{ r.ingredient_count }}), one per line</label>
+        <textarea id="i{{ loop.index0 }}" name="ingredients" rows="{{ [r.ingredient_count, 3]|max + 1 }}">{{ r.ingredients_text }}</textarea>
+        <details>
+            <summary>Notes / instructions</summary>
+            <textarea name="notes" rows="5">{{ r.notes }}</textarea>
+        </details>
+    </section>
+    {% endfor %}
+    <div class="row">
+        <button type="submit" class="btn btn--primary">Save ticked recipes</button>
+        <a class="btn" href="/recipes/import">Start over</a>
+    </div>
+</form>
+{% else %}
+<p class="subtitle">
+    Paste as many recipes as you like, with a line of <code>---</code> between each one.
+    Each is read the same way as a single pasted recipe: the first line is the name, and
+    an "Ingredients" heading (or lines starting with an amount) marks the ingredients.
+    You'll get to check them all before anything is saved.
+</p>
+<form method="post" action="/recipes/import" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="label" for="pasted">Recipes</label>
+    <textarea id="pasted" name="pasted" rows="18" placeholder="Taco Night
+Serves 4
+Ingredients
+1 lb ground beef
+8 each taco shells
+1 cup shredded cheese
+Instructions
+Brown the beef...
+---
+Pancakes
+Ingredients
+2 cups flour
+2 tbsp sugar
+1 cup milk">{{ pasted }}</textarea>
+    <div><button type="submit" class="btn btn--primary">Read recipes</button></div>
+</form>
+{% endif %}
+{% endblock %}
