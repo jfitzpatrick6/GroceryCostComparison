@@ -50,6 +50,14 @@ This starts a Postgres container and the scraper container. The scraper runs onc
 
 A full run currently takes a while - Tops alone is on the order of 20 minutes (it walks ~170 category pages). Aldi is much faster (a few minutes, smaller catalog). This is expected, not a bug.
 
+The scraper logs a count per store as it goes, so a run that quietly fetched less than the store actually has is visible rather than silent (#96). BJs' line reports what it parsed, what it skipped and why, and what the API itself says the catalogue holds:
+
+```
+[BJs] parsed 3121 of 3135 products fetched; skipped 14 (ValueError: weighted item missing minpackweight: 2, no_store_price: 12); API declares 3135 in this catalogue
+```
+
+`no_store_price` means BJs lists the product online-only, with a ship-to-home price and no club price. Those are skipped on purpose rather than priced from the `online` value: `/list/where-to-buy` compares what it costs to walk into a store, and on real captured products the two differ by as much as 30%. A `WARNING` line naming both numbers is printed if the walk ends before the API's declared total - that means the run is incomplete and its prices will bias the comparison against that store.
+
 To keep prices fresh automatically instead of remembering to run this by hand, start `scraper_scheduler` instead (same image, same `.env`, no separate setup) - it runs the same scrape once a day at 3am:
 
 ```
@@ -112,11 +120,31 @@ Everything lands in a single `grocery_prices` table in the `grocery_db` Postgres
 | `unit_price` | Same as `rate` but numeric, for comparing/sorting |
 | `unit` | Unit `unit_price` is in: `lb`, `gal`, `each`, or `ft` |
 
-Every scrape appends new rows rather than overwriting, so the table holds a rolling window of real history rather than growing forever (#65). At the end of each scrape the collector deletes rows older than `PRICE_HISTORY_RETENTION_DAYS` (default 30), measured back from the newest row in the table - so a pipeline that has been down for a month keeps its last window of history instead of being pruned to nothing, and a run that can't work the cutoff out safely deletes nothing at all. One full snapshot is ~46,500 rows, which is why the window exists: unbounded, the daily schedule reaches ~17M rows / ~3 GB in a year. It's 30 days rather than 90 because reading the latest price per product/store means walking every historical row however well it's indexed - measured on synthetic data matched to the real distribution, the full catalog read that `/list` and `/list/where-to-buy` make takes ~1s at a 30-day window (1.4M rows) and ~3s at a 90-day window (4.2M rows). Raise the setting if you want a longer history and can spend the latency; rows an earlier run already deleted don't come back.
+Every scrape appends new rows rather than overwriting, so the table holds a rolling window of real history rather than growing forever (#65). At the end of each scrape the collector deletes rows older than `PRICE_HISTORY_RETENTION_DAYS` (default 30), measured back from the newest row in the table - so a pipeline that has been down for a month keeps its last window of history instead of being pruned to nothing, and a run that can't work the cutoff out safely deletes nothing at all. One full snapshot is ~23,000 rows, which is why the window exists: unbounded, the daily schedule reaches ~8M rows / ~1.5 GB in a year. It's 30 days rather than 90 because reading the latest price per product/store means walking every historical row however well it's indexed - measured on synthetic data matched to the real distribution, the full catalog read that `/list` and `/list/where-to-buy` make takes ~1s at 1.4M rows and ~3s at 4.2M rows. Raise the setting if you want a longer history and can spend the latency; rows an earlier run already deleted don't come back.
+
+> **Those row counts used to be quoted at roughly double their real size, and the
+> error propagated into this paragraph (#96).** The `grocery_prices` table on the
+> dev host held 46,501 rows, which was read as "one snapshot is ~46,500 rows" -
+> but it actually held *three* runs from the same afternoon, two of them
+> single-store re-runs during development. One real snapshot was 24,260 rows.
+> Since `grocery_prices` appends, **a row count over a store, or over a day,
+> sums every run in the window**; to size one scrape, count one `datetime`
+> value:
+>
+> ```sql
+> SELECT store, datetime, count(*) FROM grocery_prices
+> GROUP BY store, datetime ORDER BY datetime DESC;
+> ```
+>
+> Reading it the other way is what made a perfectly complete scrape look like it
+> had lost half its catalogue. The latency figures above were measured at the row
+> counts stated and are not wrong *at those counts*, but a real deployment now
+> reaches about half of them, so treat ~1s / ~3s as an upper bound. They were not
+> re-measured as part of #96.
 
 Retention applies to `grocery_prices` and nothing else. Prices are re-scrapable - recipes, what's been cooked (`/history`), the pantry and pinned staples are not, and no cleanup job here touches them.
 
-`grocery_prices_latest` is a view with just the most recent row per product/store - query that instead of the raw table unless you actually want history. The scraper maintains an index on `grocery_prices (product, store, datetime DESC)` for it; without one, every read of the view scans the whole table and spills an external merge sort to disk (it already does at a single 46k-row scrape).
+`grocery_prices_latest` is a view with just the most recent row per product/store - query that instead of the raw table unless you actually want history. The scraper maintains an index on `grocery_prices (product, store, datetime DESC)` for it; without one, every read of the view scans the whole table and spills an external merge sort to disk (it already does at a month of retained history).
 
 ## Backups and restore
 
