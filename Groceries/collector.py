@@ -22,7 +22,15 @@ DB_PASS = os.getenv("DB_PASS", "password")
 # TOPS_STORE/ALDIS_STORE are intentionally not required: tops.py/aldis.py
 # don't use them yet (see #43 - Instacart's white-label platform doesn't
 # support safe store targeting via a simple store id the way it used to).
-REQUIRED_STORE_ENV = ["BJS_STORE", "WALMARTSTORE"]
+REQUIRED_STORE_ENV = ["BJS_STORE"]
+
+# Walmart is behind a bot-verification wall that is deliberately not
+# circumvented (#12), and a real run spent 28 minutes producing 0 items
+# (#132) - about half of every nightly scrape. Off unless asked for; its store
+# id is only required when it is on.
+SCRAPE_WALMART = os.getenv("SCRAPE_WALMART", "").strip().lower() in ("1", "true", "yes")
+if SCRAPE_WALMART:
+    REQUIRED_STORE_ENV.append("WALMARTSTORE")
 
 
 def _timed_scrape(store_name, scrape_fn, store_id):
@@ -61,6 +69,9 @@ def get_data():
 
     frames = []
     outcomes = []
+    if not SCRAPE_WALMART:
+        stores = [s for s in stores if s[0] != "Walmart"]
+        outcomes.append(("Walmart", None, run_status.SKIPPED))
     for store_name, scrape_fn, store_id in stores:
         try:
             df = _timed_scrape(store_name, scrape_fn, store_id)

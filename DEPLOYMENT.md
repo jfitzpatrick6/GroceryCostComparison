@@ -40,7 +40,7 @@ Create `.env` at the repo root. Required contents (names verified against
 |---|---|---|
 | `BJS_STORE` | **yes** | In `REQUIRED_STORE_ENV`; `collector.py` fails loudly at startup if missing. Location-identifying. |
 | `BJS_CNSTRC_KEY` | **yes, for BJs** | BJs' public Constructor.io search key (`key_…`, visible in bjs.com's requests to `ac.cnstrc.com`). Not in `REQUIRED_STORE_ENV`: if missing, only BJs fails - with `BJS_CNSTRC_KEY is not set` in the run summary - and the other stores still scrape. **Upgrading from before #72: add this line before pulling, or BJs prices stop updating.** |
-| `WALMARTSTORE` | **yes** (listed) | Also in `REQUIRED_STORE_ENV`, so it is checked even though Walmart scraping does not work (#12). Set it or the run aborts before scraping anything. |
+| `WALMARTSTORE` | no | Only read when `SCRAPE_WALMART=1`. Walmart is skipped by default (#132): its bot wall (#12) cost ~28 minutes a night for 0 items. |
 | `TOPS_STORE`, `ALDIS_STORE` | no | Read and passed to the scrapers, but **deliberately not required** — `tops.py`/`aldis.py` don't use them yet, because Instacart's white-label platform no longer supports safe store targeting via a simple store id (#43). Setting them changes nothing today. |
 | `USDA_API_KEY` | recommended | Free key from <https://fdc.nal.usda.gov/api-key-signup>. Without it the planner's purchase-unit estimates silently return nothing rather than erroring. |
 | `SECRET_KEY` | recommended | Signs session cookies and CSRF tokens (#69). If unset, `docker-entrypoint.sh` generates a random key per container start and logs that it did - secure, but every restart resets sessions (chosen profile, forms open in a tab). Set it to keep sessions across restarts: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. There is no hardcoded fallback any more. |
@@ -273,8 +273,10 @@ out-of-scope note.
 
 `scraper_scheduler` runs cron in the foreground and scrapes daily at 03:00 UTC.
 Walmart does not work (#12 — bot-verification wall, deliberately not
-circumvented), so expect three of four stores and a failure line for Walmart in
-every run. That is not a broken deployment.
+circumvented), so it is skipped unless `SCRAPE_WALMART=1` (#132); every run's
+summary says "Walmart skipped". That is not a broken deployment. **Upgrading
+from before #132:** an existing `.env` with `WALMARTSTORE` set now skips Walmart
+too - add `SCRAPE_WALMART=1` only if you want the 28-minute attempt back.
 
 ```
 docker compose logs --tail 40 scraper_scheduler

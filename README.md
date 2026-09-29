@@ -28,14 +28,14 @@ TOPS_STORE=
 ALDIS_STORE=
 BJS_STORE=1234
 BJS_CNSTRC_KEY=
-WALMARTSTORE=1234
 USDA_API_KEY=
 PRICE_HISTORY_RETENTION_DAYS=
 ```
 
 - `TOPS_STORE` / `ALDIS_STORE` can be left blank for now - they're not used yet (see the table above and #43).
 - `BJS_CNSTRC_KEY` is the Constructor.io search key BJs' own website uses (it starts `key_`). It's public - it ships in BJs' page JavaScript; open bjs.com with the browser's developer tools and look for `key=` on a request to `ac.cnstrc.com` - but it can change, so it lives here rather than in the code (#72). Without it the BJs scrape fails with a clear message and the other stores still run.
-- `BJS_STORE` / `WALMARTSTORE` need real store ids for those chains. BJs' id shows up in that chain's own site network requests; Walmart's scraper doesn't currently work regardless of what's set here (see above).
+- `BJS_STORE` needs BJs' real store id; it shows up in that chain's own site network requests.
+- Walmart is **not scraped by default** (#132): its bot-verification wall (#12) means a run spends ~28 minutes producing nothing. Set `SCRAPE_WALMART=1` and `WALMARTSTORE=<id>` to try it anyway; each run's summary says "Walmart skipped" otherwise.
 - `USDA_API_KEY` is for the webapp's recipe-ingredient unit conversion ("2 cups flour" -> a purchase-unit estimate) - get a free key at https://fdc.nal.usda.gov/api-key-signup. Optional; that one feature just won't produce estimates without it.
 - `PRICE_HISTORY_RETENTION_DAYS` is optional: how many days of raw price history each scrape keeps, blank for the default of 30. Set it to `0` to keep everything and let the table grow without bound - see [What gets written](#what-gets-written) for what that costs. A value that isn't a whole number of days (`90days`) prunes nothing for that run and says so in the scrape log, rather than falling back to the default and deleting history nobody meant to lose.
 
@@ -73,10 +73,10 @@ docker compose logs --tail 60 scraper_scheduler
 Every run ends with one line saying whether it worked (#63):
 
 ```
-Run summary: OK - Aldis ok (2173 items); Tops ok (17408 items); BJs ok (3121 items); Walmart FAILED (expected, #12): ...
+Run summary: OK - Walmart skipped; Aldis ok (2171 items); Tops ok (17497 items); BJs ok (3145 items)
 ```
 
-`OK` means every store that is supposed to work did. `PARTIAL` means at least one store that normally works failed - its prices are left at the last good run. `FAILED` means nothing was scraped. Walmart fails every run by design (#12) and doesn't count against the verdict.
+`OK` means every store that is supposed to work did. `PARTIAL` means at least one store that normally works failed - its prices are left at the last good run. `FAILED` means nothing was scraped. A store that returns **0 items** counts as failed, not ok (#132). Walmart is skipped unless `SCRAPE_WALMART=1`, and when enabled its failure is expected (#12) and doesn't count against the verdict.
 
 The scraper logs a count per store as it goes, so a run that quietly fetched less than the store actually has is visible rather than silent (#96). BJs' line reports what it parsed, what it skipped and why, and what the API itself says the catalogue holds:
 

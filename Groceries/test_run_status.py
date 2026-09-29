@@ -39,6 +39,33 @@ class RunSummaryTests(unittest.TestCase):
         self.assertLess(len(line), 300)
 
 
+class EmptyAndSkippedTests(unittest.TestCase):
+    """#132, from a real run: "Walmart ok (0 items)" under an OK verdict."""
+
+    def test_zero_items_is_a_failure_not_ok(self):
+        verdict, line = run_status.run_summary([
+            ("Aldis", 2171, None), ("Tops", 0, None), ("BJs", 3145, None),
+        ])
+        self.assertEqual(verdict, "PARTIAL")
+        self.assertIn("Tops FAILED: returned 0 items", line)
+
+    def test_walmart_zero_items_is_the_expected_failure(self):
+        verdict, line = run_status.run_summary([
+            ("Aldis", 2171, None), ("Tops", 17497, None), ("BJs", 3145, None), ("Walmart", 0, None),
+        ])
+        self.assertEqual(verdict, "OK")
+        self.assertIn("Walmart FAILED (expected, #12): returned 0 items", line)
+
+    def test_skipped_is_neither_success_nor_failure(self):
+        verdict, line = run_status.run_summary([
+            ("Aldis", 2171, None), ("Tops", 17497, None), ("BJs", 3145, None),
+            ("Walmart", None, run_status.SKIPPED),
+        ])
+        self.assertEqual(verdict, "OK")
+        self.assertIn("Walmart skipped", line)
+        self.assertEqual(run_status.run_summary([("Walmart", None, run_status.SKIPPED)])[0], "FAILED")
+
+
 class IsStaleTests(unittest.TestCase):
     NOW = datetime(2026, 9, 29, 3, 10)
 
