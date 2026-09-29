@@ -41,10 +41,22 @@ def _clear_first_match_conversions(cur):
     cur.execute("DELETE FROM ingredient_conversions")
 
 
+def _clear_misidentified_conversions(cur):
+    """#123 fixed which FDC FOOD these names resolve to; conversions cached under
+    the old identity (a frozen milk dessert for "milk", 137 g/cup) would never be
+    refreshed. Derived data - the #64 worker re-resolves on the next view."""
+    cur.execute(
+        "DELETE FROM ingredient_conversions WHERE lower(name) IN "
+        "('milk', 'whole milk', 'rice', 'brown rice', 'spinach')"
+    )
+
+
 MIGRATIONS = [
     (1, "baseline: every app table as of #66", app.ensure_app_schema),
     (2, "clear USDA conversions cached under first-match portion choice (#78)",
      _clear_first_match_conversions),
+    (3, "clear USDA conversions cached under the wrong food identity (#123)",
+     _clear_misidentified_conversions),
 ]
 
 

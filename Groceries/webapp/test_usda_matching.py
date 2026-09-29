@@ -270,6 +270,40 @@ class MockedUsdaMatchingTests(unittest.TestCase):
                      "grated parmesan cheese"]:
             self.assertEqual(app._split_form_words(name), (name, set()), name)
 
+    def test_a_failed_candidate_abandons_the_lookup_not_skips_to_another_form(self):
+        # Review of #123: later candidates are often another FORM of the food
+        # ("Rice noodles, cooked" then "Rice noodles, dry"), and successes are
+        # cached permanently - so a transient failure must yield None (retried
+        # later), never the next candidate's answer.
+        import requests
+
+        def first_fails(url, params=None, timeout=None):
+            if url.endswith("/foods/search"):
+                return _FakeResponse({"foods": [
+                    {"fdcId": 1, "description": "Rice noodles, cooked"},
+                    {"fdcId": 2, "description": "Rice noodles, dry"},
+                ]})
+            if url.endswith("/1"):
+                raise requests.Timeout("read timed out")
+            return _FakeResponse({"foodPortions": [_portion(1.0, "cup", 91.0)]})
+
+        with mock.patch.object(app.requests, "get", first_fails):
+            self.assertIsNone(app._usda_grams_per_unit("rice noodles", ["cup"]))
+
+    def test_detail_timeout_allows_slow_fdc_records(self):
+        # FDC 746782 (whole milk) took 9.5 s live; the detail call must wait longer.
+        seen = []
+
+        def record(url, params=None, timeout=None):
+            if "/food/" in url:
+                seen.append(timeout)
+                return _FakeResponse({"foodPortions": [_portion(1.0, "cup", 244.0)]})
+            return _FakeResponse({"foods": [{"fdcId": 171265, "description": "Milk, whole, 3.25% milkfat"}]})
+
+        with mock.patch.object(app.requests, "get", record):
+            app._usda_grams_per_unit("whole milk", ["cup"])
+        self.assertGreaterEqual(seen[0], 15)
+
     def test_butter_resolves_to_plain_butter_not_ghee(self):
         # The #54 headline bug: bare "butter" used to top-match "Butter,
         # Clarified butter (ghee)" - it must resolve to plain salted
@@ -450,6 +484,14 @@ class LiveUsdaApiTests(unittest.TestCase):
     def test_spring_onion_gets_a_real_estimate(self):
         self.assertEqual(app._usda_grams_per_unit("spring onion", ["cup"]), 100.0)
 
+    def test_123_everyday_staples_resolve_to_the_right_food(self):
+        # #123: before the aliases these were a frozen milk dessert (137 g/cup),
+        # a rice-pilaf mix (206), a spinach souffle (136), buttermilk, and brown
+        # rice FLOUR (158). Values below are the live results for the intended
+        # entries (2026-09-29).
+        for name, grams in [("milk", 244.0), ("whole milk", 244.0), ("rice", 185.0),
+                            ("brown rice", 185.0), ("spinach", 30.0)]:
+            self.assertEqual(app._usda_grams_per_unit(name, ["cup"]), grams, name)
 
 if __name__ == "__main__":
     unittest.main()

@@ -2537,6 +2537,25 @@ _USDA_SEARCH_ALIASES = {
     # word count from 2 to 4 - a speculative entry, which CONTRIBUTING §6
     # forbids in these tables.
     "green onion": "onion spring scallion raw",
+    # #123, found in #78's live audit (2026-09-29). Each resolved to a
+    # different FOOD before - a wrong estimate, not a missing one:
+    #   milk    -> 167686 "Milk dessert, frozen, milk-fat free"  137 g/cup
+    #   rice    -> 168951 "Rice and vermicelli mix, rice pilaf"  206 g/cup
+    #   spinach -> 170494 "Spinach souffle"                      136 g/cup
+    # "1 cup milk" is in the household's own recipes. 2% is the target for
+    # plain "milk" because it's the everyday default; whole/2%/skim all weigh
+    # ~244-245 g/cup, so the choice doesn't move the estimate. Rice is RAW
+    # long-grain white: recipes measure rice uncooked, and that's what gets
+    # bought. "tomatoes" is deliberately NOT aliased - canned vs fresh is a
+    # real ambiguity, and the current canned answer may be what's meant.
+    "milk": "milk reduced fat fluid 2% milkfat",
+    "rice": "rice white long grain regular raw",
+    "spinach": "spinach raw",
+    # Two more misses the same live check turned up: "whole milk" resolved to
+    # "Milk, buttermilk, fluid, whole" and "brown rice" to "Rice flour, brown"
+    # (158 g/cup - flour, not grain).
+    "whole milk": "milk whole 3.25% milkfat",
+    "brown rice": "rice brown long grain raw",
 }
 
 
@@ -2719,10 +2738,19 @@ def _usda_resolve(query, measure_words, forms, api_key):
         # whole-word identity filter above, so this doesn't reopen the
         # same-word-different-food risk the rest of #54 is fixing.
         for food in foods[:5]:
+            # 20 s, not 5 (#123): FDC's Foundation record 746782 for whole milk
+            # took 9.5 s, so a 5 s timeout made "whole milk" return None. This
+            # runs in #64's background worker, so a longer wait costs no page any
+            # time. A failure still ABANDONS the lookup rather than moving to the
+            # next candidate: later candidates are often a different form of the
+            # food ("Rice noodles, cooked" then "..., dry"), and a success is
+            # cached permanently, so skipping would turn a transient network
+            # error into a permanent wrong estimate (review of #123). A failure
+            # is only remembered in memory for an hour, then retried.
             detail = requests.get(
                 f"https://api.nal.usda.gov/fdc/v1/food/{food['fdcId']}",
                 params={"api_key": api_key},
-                timeout=5,
+                timeout=20,
             )
             detail.raise_for_status()
             matching = []
