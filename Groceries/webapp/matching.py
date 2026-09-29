@@ -623,10 +623,13 @@ def load_catalog(cur):
 # Why those counters and not max(datetime): the index on grocery_prices is
 # (product, store, datetime DESC), which cannot answer max(datetime) without
 # walking every retained row - the very cost being avoided. pg_stat_user_tables
-# is one row, O(1). Its counters are flushed at transaction end with up to about
-# a second's delay, so a new scrape shows up within seconds; CATALOG_MAX_AGE is
-# the backstop if a counter change were ever missed, and a stats reset (counters
-# back to 0) simply looks like a change and rebuilds.
+# is one row, O(1). Its counters move after commit - usually within a second,
+# though Postgres 15+ may defer a flush up to about a minute under contention;
+# CATALOG_MAX_AGE is the backstop for that and for anything that bypasses the
+# counters (TRUNCATE, or a table rewrite by ALTER COLUMN TYPE - neither happens
+# in normal operation). A stats reset looks like a change and rebuilds. If the
+# table isn't in current_schema() no stats row comes back and every request
+# rebuilds: slow but never stale.
 CATALOG_MAX_AGE = 15 * 60
 _catalog_cache = {"key": None, "built": 0.0, "catalog": None}
 _catalog_lock = threading.Lock()
