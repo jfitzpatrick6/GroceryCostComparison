@@ -39,6 +39,7 @@ Create `.env` at the repo root. Required contents (names verified against
 | Variable | Required? | Notes |
 |---|---|---|
 | `BJS_STORE` | **yes** | In `REQUIRED_STORE_ENV`; `collector.py` fails loudly at startup if missing. Location-identifying. |
+| `BJS_CNSTRC_KEY` | **yes, for BJs** | BJs' public Constructor.io search key (`key_…`, visible in bjs.com's requests to `ac.cnstrc.com`). Not in `REQUIRED_STORE_ENV`: if missing, only BJs fails - with `BJS_CNSTRC_KEY is not set` in the run summary - and the other stores still scrape. **Upgrading from before #72: add this line before pulling, or BJs prices stop updating.** |
 | `WALMARTSTORE` | **yes** (listed) | Also in `REQUIRED_STORE_ENV`, so it is checked even though Walmart scraping does not work (#12). Set it or the run aborts before scraping anything. |
 | `TOPS_STORE`, `ALDIS_STORE` | no | Read and passed to the scrapers, but **deliberately not required** — `tops.py`/`aldis.py` don't use them yet, because Instacart's white-label platform no longer supports safe store targeting via a simple store id (#43). Setting them changes nothing today. |
 | `USDA_API_KEY` | recommended | Free key from <https://fdc.nal.usda.gov/api-key-signup>. Without it the planner's purchase-unit estimates silently return nothing rather than erroring. |

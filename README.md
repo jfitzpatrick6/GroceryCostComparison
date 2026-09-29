@@ -27,12 +27,14 @@ Create a `.env` file at the repo root (same level as this file, one directory ab
 TOPS_STORE=
 ALDIS_STORE=
 BJS_STORE=1234
+BJS_CNSTRC_KEY=
 WALMARTSTORE=1234
 USDA_API_KEY=
 PRICE_HISTORY_RETENTION_DAYS=
 ```
 
 - `TOPS_STORE` / `ALDIS_STORE` can be left blank for now - they're not used yet (see the table above and #43).
+- `BJS_CNSTRC_KEY` is the Constructor.io search key BJs' own website uses (it starts `key_`). It's public - it ships in BJs' page JavaScript; open bjs.com with the browser's developer tools and look for `key=` on a request to `ac.cnstrc.com` - but it can change, so it lives here rather than in the code (#72). Without it the BJs scrape fails with a clear message and the other stores still run.
 - `BJS_STORE` / `WALMARTSTORE` need real store ids for those chains. BJs' id shows up in that chain's own site network requests; Walmart's scraper doesn't currently work regardless of what's set here (see above).
 - `USDA_API_KEY` is for the webapp's recipe-ingredient unit conversion ("2 cups flour" -> a purchase-unit estimate) - get a free key at https://fdc.nal.usda.gov/api-key-signup. Optional; that one feature just won't produce estimates without it.
 - `PRICE_HISTORY_RETENTION_DAYS` is optional: how many days of raw price history each scrape keeps, blank for the default of 30. Set it to `0` to keep everything and let the table grow without bound - see [What gets written](#what-gets-written) for what that costs. A value that isn't a whole number of days (`90days`) prunes nothing for that run and says so in the scrape log, rather than falling back to the default and deleting history nobody meant to lose.

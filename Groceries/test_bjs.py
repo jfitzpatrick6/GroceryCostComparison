@@ -40,6 +40,7 @@ call (CONTRIBUTING §7, §11). Run with:
 import io
 import unittest
 from contextlib import redirect_stdout
+from unittest import mock
 
 import BJs
 
@@ -430,6 +431,44 @@ class ParseSizeTests(unittest.TestCase):
     def test_plain_sizes_and_no_size(self):
         self.assertEqual(BJs.parse_size("Tyson Boneless Skinless Chicken Breast, 10 lbs."), "10 lb")
         self.assertEqual(BJs.parse_size("Wellsley Farms 1/2 Sheet Gold & Chocolate Base Cake, Serves 32"), "N/A")
+
+
+class BrowseRequestTests(unittest.TestCase):
+    """#72: the key comes from the environment, and the request still asks for
+    this club's prices."""
+
+    def test_no_constructor_key_literal_in_any_scraper_source(self):
+        # Constructor.io keys are "key_" plus 16 alphanumerics; {16,} avoids
+        # tripping on identifiers like key_fingerprint. Scans every .py under
+        # Groceries/, not just BJs.py - a copy in an old test script is how the
+        # key survived the first pass of #72.
+        import pathlib
+        root = pathlib.Path(BJs.__file__).parent
+        for path in root.rglob("*.py"):
+            self.assertNotRegex(path.read_text(), r"key_[A-Za-z0-9]{16,}", str(path))
+
+    def test_first_page_failure_is_a_failure_not_zero_items(self):
+        # A wrong/rotated key: the API 401s on page 1.
+        with mock.patch.dict("os.environ", {"BJS_CNSTRC_KEY": "k"}), \
+                mock.patch.object(BJs, "_fetch_page", lambda store, page, key: None), \
+                redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "BJS_CNSTRC_KEY"):
+                BJs.main("9999")
+
+    def test_missing_key_fails_before_any_request(self):
+        with mock.patch.dict("os.environ", {"BJS_CNSTRC_KEY": ""}):
+            with self.assertRaisesRegex(RuntimeError, "BJS_CNSTRC_KEY"):
+                BJs.browse_key()
+
+    def test_params_request_this_clubs_price_fields_and_no_frozen_session(self):
+        params = BJs._browse_params("9999", 3, "k")
+        hidden = [v for k, v in params if k == "fmt_options[hidden_fields]"]
+        self.assertIn("prices.9999", hidden)
+        self.assertIn("prices.online", hidden)
+        names = {k for k, _ in params}
+        self.assertNotIn("i", names)  # the frozen session that duplicated products
+        self.assertIn(("page", 3), params)
+        self.assertIn(("key", "k"), params)
 
 
 if __name__ == "__main__":
