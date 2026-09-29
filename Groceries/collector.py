@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 
 import pandas as pd
@@ -7,6 +8,7 @@ import psycopg2
 import aldis
 import BJs
 import retention
+import run_status
 import tops
 import units
 import Walmart
@@ -45,6 +47,7 @@ def get_data():
     for the run."""
     missing = [name for name in REQUIRED_STORE_ENV if not os.getenv(name)]
     if missing:
+        print(f"Run summary: FAILED - missing required store id env var(s): {', '.join(missing)}")
         raise RuntimeError(f"Missing required store id env var(s): {', '.join(missing)}")
 
     stores = [
@@ -57,17 +60,23 @@ def get_data():
     run_start = time.monotonic()
 
     frames = []
+    outcomes = []
     for store_name, scrape_fn, store_id in stores:
         try:
             df = _timed_scrape(store_name, scrape_fn, store_id)
         except Exception as e:
             print(f"[{store_name}] scrape failed, skipping this store: {e}")
+            outcomes.append((store_name, None, e))
             continue
+        outcomes.append((store_name, len(df), None))
         df['store'] = store_name
         df['store_id'] = store_id
         frames.append(df)
 
     if not frames:
+        # Verdict first, so a run where every store failed still ends its log
+        # with the one line an operator greps for (#63).
+        print(run_status.run_summary(outcomes)[1])
         raise RuntimeError("Every store's scraper failed - nothing to store.")
 
     total_df = pd.concat(frames, ignore_index=True)
@@ -77,7 +86,7 @@ def get_data():
     total_elapsed = time.monotonic() - run_start
     print(f"Total: {len(total_df)} items across all stores in {total_elapsed:.1f}s")
 
-    return total_df
+    return total_df, outcomes
 
 
 def _numeric_rate(price, size):
@@ -200,9 +209,57 @@ def store_data(df):
         conn.close()
 
 
+def newest_price_time():
+    """max(datetime) in grocery_prices, or None if the table is empty or does
+    not exist yet (a fresh deploy, before the first scrape has created it)."""
+    # Retries, unlike the rest of this script: this runs at container start,
+    # and after a host reboot dockerd restarts containers WITHOUT compose's
+    # depends_on/service_healthy ordering, so Postgres may not be accepting
+    # connections yet - the exact "host was off at 03:00" case the catch-up
+    # exists for. Same budget shape as webapp/init_schema.py.
+    for attempt in range(1, 31):
+        try:
+            conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER,
+                                    password=DB_PASS, connect_timeout=5)
+            break
+        except psycopg2.OperationalError:
+            if attempt == 30:
+                raise
+            time.sleep(2)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('grocery_prices')")
+            if cur.fetchone()[0] is None:
+                return None
+            cur.execute("SELECT max(datetime) FROM grocery_prices")
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
 def main():
-    data = get_data()
-    store_data(data)
+    # --if-stale: scheduler_entrypoint.sh runs this once at container start.
+    # cron never catches up on a missed 03:00, so a host that was off or
+    # rebooting then silently skipped a day, and a fresh deploy showed an empty
+    # app until the next 03:00 (#63). Scrape now only if prices are actually old.
+    if "--if-stale" in sys.argv[1:]:
+        newest = newest_price_time()
+        if not run_status.is_stale(newest):
+            print(f"Startup check: newest prices are from {newest}, not stale - no catch-up scrape.")
+            return
+        print(f"Startup check: newest prices are from {newest or 'never'} - running a catch-up scrape.")
+    data, outcomes = get_data()
+    try:
+        store_data(data)
+    except Exception as e:
+        # The scrape worked but nothing was stored. Saying the stores' results
+        # here would make "Run summary: OK" a lie the log then contradicts.
+        print(f"Run summary: FAILED - scraped {len(data)} items but storing them failed: "
+              f"{type(e).__name__}: {str(e)[:120]}")
+        raise
+    # Printed only after the insert commits, so OK means stored, not merely
+    # fetched (review of #63).
+    print(run_status.run_summary(outcomes)[1])
 
 
 if __name__ == "__main__":

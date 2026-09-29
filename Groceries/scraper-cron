@@ -1,4 +1,5 @@
-# Runs a full scrape daily at 3am - late enough that anyone actually using
+# Runs a full scrape daily at 03:00 container time, which is UTC (no TZ is
+# set in the image) - late enough that anyone actually using
 # the site overnight won't compete with it for bandwidth, early enough that
 # fresh prices are ready before the next day's shopping. Edit the schedule
 # below and rebuild the scraper_scheduler service to change it; there's no
@@ -8,4 +9,8 @@
 # .env.runtime is written by scheduler_entrypoint.sh at container start -
 # cron does not inherit the container's runtime environment (DB_HOST,
 # BJS_STORE, etc) by default, so the job sources it explicitly.
-0 3 * * * root cd /app && . /app/.env.runtime && python collector.py >> /proc/1/fd/1 2>> /proc/1/fd/2
+#
+# flock shares /tmp/scrape.lock with scheduler_entrypoint.sh's catch-up scrape
+# (#63): if that is still running at 03:00, this run is skipped and says so
+# (exit 75 is flock's "lock held" code here, distinct from a failed scrape).
+0 3 * * * root cd /app && . /app/.env.runtime && { flock -n -E 75 /tmp/scrape.lock python collector.py; if [ $? -eq 75 ]; then echo "Skipped 03:00 scrape: another scrape still holds the lock"; fi; } >> /proc/1/fd/1 2>> /proc/1/fd/2

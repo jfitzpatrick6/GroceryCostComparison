@@ -39,16 +39,42 @@ PRICE_HISTORY_RETENTION_DAYS=
 
 **Do not commit a filled-in `.env`.** Store ids are location-identifying. `.env` is already gitignored - keep it that way.
 
-## Running a scrape
+## Starting everything
 
 ```
 cd Groceries
-docker compose up --build db grocery_scraper
+docker compose up -d --build
 ```
 
-This starts a Postgres container and the scraper container. The scraper runs once and exits; Postgres keeps running. Re-run `docker compose up grocery_scraper` any time you want a manual one-off scrape.
+That one command is the normal way to run the app. It starts `db`, `webapp`, `db_backup` and `scraper_scheduler`, and prices then stay fresh on their own:
 
-A full run currently takes a while - Tops alone is on the order of 20 minutes (it walks ~170 category pages). Aldi is much faster (a few minutes, smaller catalog). This is expected, not a bug.
+- `scraper_scheduler` scrapes every store daily at **03:00 UTC** (edit `Groceries/scraper-cron` and rebuild to change that).
+- At startup it also runs a **catch-up scrape if the newest prices are more than 26 hours old**, so a fresh deploy, or a host that was off at 03:00, doesn't sit on stale or empty prices until the next night (#63). The catch-up and the nightly run share a lock, so they never overlap. A manual `grocery_scraper` run is a separate container and does *not* take that lock - don't start one while the scheduler is mid-scrape.
+
+It does **not** start the one-shot `grocery_scraper` - that sits behind the `manual` profile, because a full scrape takes about 20 minutes (Tops alone walks ~170 category pages) and shouldn't fire on every `up` or reboot.
+
+## Running a scrape by hand
+
+```
+cd Groceries
+docker compose --profile manual run --rm grocery_scraper
+```
+
+This runs one full scrape and exits. You rarely need it - the scheduler covers normal use.
+
+## Reading the scrape log
+
+```
+docker compose logs --tail 60 scraper_scheduler
+```
+
+Every run ends with one line saying whether it worked (#63):
+
+```
+Run summary: OK - Aldis ok (2173 items); Tops ok (17408 items); BJs ok (3121 items); Walmart FAILED (expected, #12): ...
+```
+
+`OK` means every store that is supposed to work did. `PARTIAL` means at least one store that normally works failed - its prices are left at the last good run. `FAILED` means nothing was scraped. Walmart fails every run by design (#12) and doesn't count against the verdict.
 
 The scraper logs a count per store as it goes, so a run that quietly fetched less than the store actually has is visible rather than silent (#96). BJs' line reports what it parsed, what it skipped and why, and what the API itself says the catalogue holds:
 
@@ -58,20 +84,9 @@ The scraper logs a count per store as it goes, so a run that quietly fetched les
 
 `no_store_price` means BJs lists the product online-only, with a ship-to-home price and no club price. Those are skipped on purpose rather than priced from the `online` value: `/list/where-to-buy` compares what it costs to walk into a store, and on real captured products the two differ by as much as 30%. A `WARNING` line naming both numbers is printed if the walk ends before the API's declared total - that means the run is incomplete and its prices will bias the comparison against that store.
 
-To keep prices fresh automatically instead of remembering to run this by hand, start `scraper_scheduler` instead (same image, same `.env`, no separate setup) - it runs the same scrape once a day at 3am:
-
-```
-docker compose up -d --build db scraper_scheduler
-```
-
-It's a long-running container (`restart: unless-stopped`), unlike `grocery_scraper`'s one-shot behavior - the two don't conflict and can both exist, `scraper_scheduler` is just the hands-off way to get the same result. To change the schedule, edit `Groceries/scraper-cron` and rebuild.
-
 ## Running the webapp
 
-```
-cd Groceries
-docker compose up --build db webapp
-```
+Started by the command in [Starting everything](#starting-everything); it listens on port 5000 (or `WEBAPP_PORT`).
 
 This is a small Flask app (`Groceries/webapp/`):
 

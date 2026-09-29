@@ -1,5 +1,11 @@
 services:
+  # One-shot manual scrape: runs collector.py once and exits. Behind the
+  # "manual" profile so a plain `docker compose up -d` does NOT start it (#63) -
+  # before this, every `up`, including after a reboot, kicked off a full
+  # ~20-minute scrape. Run it deliberately:
+  #   docker compose --profile manual run --rm grocery_scraper
   grocery_scraper:
+    profiles: ["manual"]
     build: .
     depends_on:
       db:
@@ -15,19 +21,11 @@ services:
       - my_network
 
   # Same image/build as grocery_scraper (#33) - runs cron in the foreground
-  # instead of scraping once and exiting, so prices stay fresh without
-  # anyone needing to remember to run `docker compose up grocery_scraper`
-  # by hand.
-  #
-  # CORRECTION to what an earlier version of this comment claimed: this IS
-  # started by a bare `docker compose up -d`. There is no `profiles:` key
-  # anywhere in this file, so compose starts every service listed - which is
-  # also why a bare `up -d` starts the *one-shot* grocery_scraper above and
-  # kicks off a full ~20-minute scrape on every `up`, including after a reboot.
-  # That is the actual footgun here, and #63 owns fixing it (profile the
-  # one-shot, leave this in the default set). Until then, what README documents
-  # is naming services explicitly, which is why the dev host was found running
-  # db and webapp with no scheduler at all and 41-day-old prices.
+  # instead of scraping once and exiting, so prices stay fresh without anyone
+  # remembering anything. Part of the default set: a plain `docker compose up
+  # -d` starts db, webapp, db_backup and this (#63). At start it also runs a
+  # catch-up scrape if the newest prices are over 26h old, since cron never
+  # re-runs a 03:00 the host was off for - see scheduler_entrypoint.sh.
   scraper_scheduler:
     build: .
     depends_on:
