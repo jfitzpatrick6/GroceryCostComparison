@@ -1275,7 +1275,19 @@ _LIST_UNIT_CANONICAL = {
     "gal": "gal", "gallon": "gal", "gallons": "gal",
     "each": "each", "ea": "each",
     "ft": "ft", "feet": "ft", "foot": "ft",
+    "oz": "lb", "ounce": "lb", "ounces": "lb",
+    "qt": "gal", "quart": "gal", "quarts": "gal",
+    "pt": "gal", "pint": "gal", "pints": "gal",
 }
+# Exact conversions into the canonical unit, for units that aren't already in
+# it. Prices are stored per lb/gal (units.py), so a list saying "8 oz" was
+# skipped by package fitting entirely - a real list row, "shredded cheese | 8
+# oz", found by #70's tests. Only fixed-ratio units: "fl oz" is two tokens and
+# the qty regex takes one, so it stays unfitted rather than being misread as a
+# weight.
+_LIST_UNIT_FACTOR = {"oz": 1 / 16, "ounce": 1 / 16, "ounces": 1 / 16,
+                     "qt": 1 / 4, "quart": 1 / 4, "quarts": 1 / 4,
+                     "pt": 1 / 8, "pint": 1 / 8, "pints": 1 / 8}
 
 
 def _parse_needed_qty(qty_text):
@@ -1295,7 +1307,7 @@ def _parse_needed_qty(qty_text):
     if not unit:
         return None, None
     try:
-        return float(amount_str), unit
+        return float(amount_str) * _LIST_UNIT_FACTOR.get(unit_str.lower(), 1.0), unit
     except ValueError:
         return None, None
 
@@ -1315,7 +1327,12 @@ def _annotate_package_fit(match, needed_qty, needed_unit):
     package_qty = float(match["price"]) / float(match["unit_price"])
     if package_qty <= 0:
         return
-    packages = max(1, math.ceil(needed_qty / package_qty))
+    # Rounded before ceil: package_qty is derived as price / unit_price, which
+    # lands a hair under the true size - a 14 oz can at $1.03 gives 0.87499999
+    # lb, and ceil(0.875 / 0.87499999) = 2 packages at double the cost, for a
+    # list asking for exactly one can (review of #70; ~350 of 20k realistic
+    # size/price pairs hit this). Six places keeps real overage intact.
+    packages = max(1, math.ceil(round(needed_qty / package_qty, 6)))
     match["packages_needed"] = packages
     match["total_cost"] = packages * float(match["price"])
 
@@ -2161,7 +2178,16 @@ def _scale_factor(slot_servings, recipe_servings):
 
 
 def _format_amount(value):
-    return str(value).rstrip("0").rstrip(".") if "." in str(value) else str(value)
+    """A quantity for display: 3.0 -> "3", 6.5 -> "6.5".
+
+    Rounded to 4 places first. Without that, float arithmetic leaked straight
+    onto the page - 0.1 + 0.2 displayed as "0.30000000000000004 cup" in the
+    week's ingredients, the pantry's "need X more" and merged list quantities
+    (found writing #70's helper tests). Fixed-point formatting, not :g, so a
+    large amount never turns into "1e+03".
+    """
+    text = f"{round(float(value), 4):.4f}".rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
 
 
 def deplete_pantry_for_slot(cur, week_start, day_of_week, meal):
@@ -2325,7 +2351,11 @@ def _scale_ingredient_row(row):
     factor = _scale_factor(row["slot_servings"], row["recipe_servings"])
     if amount and factor != 1.0:
         try:
-            amount = _format_amount(float(amount) * factor)
+            # Full precision here; rounding happens once, on the combined
+            # total (_combine_ingredient_rows), which every display and
+            # depletion path goes through. Rounding each part first made three
+            # 1/3-cup servings sum to "0.9999 cup" (review of #70).
+            amount = repr(float(amount) * factor)
         except (TypeError, ValueError):
             pass
     return {"name": row["name"], "amount": amount, "unit": row["unit"]}
@@ -2405,7 +2435,7 @@ def apply_pantry(cur, combined):
         have = float(row["amount"])
         ing["pantry_have"] = have
         remaining = max(0.0, needed - have)
-        ing["need_amount"] = str(remaining).rstrip("0").rstrip(".") if "." in str(remaining) else str(remaining)
+        ing["need_amount"] = _format_amount(remaining)
     return combined
 
 
@@ -2958,8 +2988,7 @@ def merge_qty(existing_qty, new_amount, new_unit):
         if existing_unit == (new_unit or ""):
             try:
                 total = float(existing_amount) + float(new_amount)
-                total_str = str(total).rstrip("0").rstrip(".") if "." in str(total) else str(total)
-                return f"{total_str} {existing_unit}".strip()
+                return f"{_format_amount(total)} {existing_unit}".strip()
             except ValueError:
                 pass
     return f"{existing_qty} + {new_qty}"
