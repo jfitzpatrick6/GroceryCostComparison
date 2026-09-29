@@ -190,7 +190,11 @@ def resolve_item_match(catalog, item):
                 #
                 # _tokens is dropped for the same reason match_item drops it: it is
                 # the matcher's working state, not something a template should see.
-                chosen = {k: v for k, v in row.items() if k != "_tokens"}
+                # Strip EVERY underscore-prefixed field, not just _tokens: since
+                # #99 catalog rows also carry _token_seq and _raw_seq, and a
+                # hardcoded name here is how one gets forgotten and leaks into a
+                # template context. match_item already strips this way.
+                chosen = {k: v for k, v in row.items() if not k.startswith("_")}
                 return {chosen["store"]: chosen}
     return matching.best_per_store(matching.match_item(catalog, item["name"]))
 

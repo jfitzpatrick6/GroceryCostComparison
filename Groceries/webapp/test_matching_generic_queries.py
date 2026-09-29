@@ -72,9 +72,30 @@ class GenericQueryTests(unittest.TestCase):
 
     # --- bacon -----------------------------------------------------------
 
-    def test_bacon_does_not_match_a_pizza_that_contains_bacon(self):
+    def test_a_pizza_containing_bacon_is_demoted_below_real_bacon(self):
         # "with Bacon" makes bacon an ingredient of a composite, not the product.
-        self.assertNotIn("Breakfast Pizza With Bacon", products(self.match("bacon")))
+        #
+        # Demoted, NOT deleted. An earlier version of this change rejected
+        # composites outright by applying MIN_SCORE after the penalty, which
+        # silently dropped correct matches wholesale (241 of 395 live "cheese"
+        # rows). Eligibility is decided on the raw ratio and the penalty only
+        # affects ranking, so a composite can still surface - but last, and below
+        # LOW_CONFIDENCE_SCORE so #97 flags it - which is the honest outcome when
+        # it is the only thing a store stocks.
+        matches = self.match("bacon")
+        names = products(matches)
+        self.assertIn("Breakfast Pizza With Bacon", names)
+        self.assertEqual(names[-1], "Breakfast Pizza With Bacon", "composite must rank last")
+        score = next(m["match_score"] for m in matches
+                     if m["product"] == "Breakfast Pizza With Bacon")
+        self.assertLess(score, matching.LOW_CONFIDENCE_SCORE if hasattr(matching, "LOW_CONFIDENCE_SCORE") else 0.45)
+
+    def test_best_per_store_never_picks_the_pizza_when_real_bacon_exists(self):
+        # What the user actually sees: one product per store, best score wins.
+        # The demotion only matters if it changes the selection.
+        by_store = matching.best_per_store(self.match("bacon"))
+        self.assertNotIn("Breakfast Pizza With Bacon",
+                         [v["product"] for v in by_store.values()])
 
     def test_bacon_ranks_real_bacon_above_bacon_chips(self):
         matches = self.match("bacon")
@@ -92,8 +113,11 @@ class GenericQueryTests(unittest.TestCase):
 
     # --- eggs ------------------------------------------------------------
 
-    def test_eggs_does_not_match_potato_salad_with_egg(self):
-        self.assertNotIn("Aldi Potato Salad with Egg", products(self.match("eggs")))
+    def test_potato_salad_with_egg_is_demoted_and_never_selected(self):
+        self.assertIn("Aldi Potato Salad with Egg", products(self.match("eggs")))
+        by_store = matching.best_per_store(self.match("eggs"))
+        self.assertNotIn("Aldi Potato Salad with Egg",
+                         [v["product"] for v in by_store.values()])
 
     def test_eggs_prefers_a_product_that_is_just_eggs(self):
         # "Eggs 12 ct" normalizes to a single token, so it scores 1.0 - the
@@ -156,7 +180,80 @@ class ScoreMatchPenaltyTests(unittest.TestCase):
         plain = self._score("Wellsley Farms Bacon", "bacon")
         composite = self._score("Breakfast Pizza With Bacon", "bacon")
         self.assertIsNotNone(plain)
-        self.assertIsNone(composite, "the composite should fall below MIN_SCORE entirely")
+        self.assertIsNotNone(composite, "demoted, not deleted - see the pizza test")
+        self.assertLess(composite, plain)
+        self.assertAlmostEqual(composite, plain * matching.COMPOSITE_PENALTY / 1.0, places=6)
+
+    def test_a_long_product_name_still_matches_a_one_word_query(self):
+        """The regression the review caught, and the reason penalties cannot gate
+        eligibility. A 1-token query against a 5-token product has ratio 0.2,
+        exactly MIN_SCORE; multiplying by NON_HEAD_PENALTY first pushed it to 0.14
+        and the product stopped matching at all. On the live catalog that dropped
+        241 of 395 "cheese" rows, 102 of 150 "cream", 68 of 96 "sugar".
+        """
+        score = self._score("Athenos Traditional Feta Cheese Chunk", "cheese")
+        self.assertIsNotNone(score, "a 5-token product must still match a 1-word query")
+        self.assertAlmostEqual(score, (1 / 5) * matching.NON_HEAD_PENALTY)
+
+    def test_a_product_ending_in_the_query_word_is_not_penalized_at_all(self):
+        self.assertAlmostEqual(self._score("Countryside Creamery Salted Butter", "butter"), 0.25)
+
+    def test_multiword_queries_take_no_word_order_penalty(self):
+        # _PHRASE_SYNONYMS rewrites "Half & Half" to "half and half", so the
+        # query's own connective used to make the composite rule fire against its
+        # exact match - "half and half" resolved to "Southern Grove Pecan Halves"
+        # at all three stores. Penalties are single-token only, like
+        # DISQUALIFYING_MODIFIERS.
+        seq, raw = matching.token_sequences("Friendly Farms Half & Half")
+        q = matching.normalize_tokens("half and half")
+        p = matching.normalize_tokens("Friendly Farms Half & Half")
+        self.assertEqual(matching.score_match(q, p, seq, raw), len(q) / len(p))
+
+    def test_macaroni_and_cheese_keeps_its_exact_match(self):
+        seq, raw = matching.token_sequences("Bella Vita Macaroni and Cheese")
+        q = matching.normalize_tokens("macaroni and cheese")
+        p = matching.normalize_tokens("Bella Vita Macaroni and Cheese")
+        # "and" is a strip word, so the product is {bella, vita, macaroni, cheese}
+        # and the query {macaroni, cheese}: ratio 2/4, and no penalty because the
+        # query has two tokens.
+        self.assertEqual(len(q), 2)
+        self.assertAlmostEqual(matching.score_match(q, p, seq, raw), 2 / 4)
+
+    def test_a_product_packed_in_its_own_juice_is_not_a_composite(self):
+        # "Cento Minced Clams in Clam Juice" has clams on both sides of "in": it
+        # IS clams. Treating that as a composite dropped 26 live canned-goods rows.
+        score = self._score("Cento Minced Clams in Clam Juice", "clams")
+        self.assertIsNotNone(score)
+        # Ratio is 1/4 and the head noun is "juice", so the non-head penalty
+        # applies - but the composite penalty must NOT, which is the point: the
+        # 0.7 factor rather than 0.4 x 0.7 proves the query token preceding the
+        # connective was noticed.
+        self.assertAlmostEqual(score, (1 / 4) * matching.NON_HEAD_PENALTY, places=6)
+
+    def test_an_ampersand_brand_is_not_mistaken_for_a_composite(self):
+        # token_sequences rewrites "&" to " and ", so "A&W Cream Soda" contains a
+        # literal standalone "w". With "w" in the connective set, "cream" looked
+        # like an ingredient of a composite and A&W Cream Soda was lost - 24 live
+        # rows carry a standalone "w", 12 of them created by that rewrite.
+        self.assertNotIn("w", matching._INGREDIENT_CONNECTIVES)
+        score = self._score("A&W Cream Soda", "cream")
+        self.assertIsNotNone(score)
+        self.assertAlmostEqual(score, (1 / 3) * matching.NON_HEAD_PENALTY)
+
+    def test_a_real_ampersand_composite_is_still_caught(self):
+        # Dropping "w" must not lose genuine composites: the "&" -> " and "
+        # rewrite means "Crackers & Bacon Bits" still reads as "crackers and
+        # bacon bits", and bacon follows a connective without preceding it.
+        self.assertTrue(matching._is_composite(
+            matching.normalize_tokens("bacon"),
+            matching.token_sequences("Crackers & Bacon Bits")[1],
+        ))
+
+    def test_a_rate_suffix_is_not_treated_as_the_head_noun(self):
+        # "per lb" left "per" as the head noun, which degraded
+        # "boneless skinless chicken breast" from 0.800 to 0.560 and broke #99's
+        # explicit done bar that specific multi-word queries must not regress.
+        self.assertNotIn("per", matching.normalize_tokens("Kirkwood Chicken Breasts, per lb"))
 
     def test_head_noun_penalty_lowers_but_does_not_reject(self):
         head = self._score("Wellsley Farms Bacon", "bacon")
@@ -177,9 +274,11 @@ class ScoreMatchPenaltyTests(unittest.TestCase):
         )
 
     def test_ampersand_counts_as_a_connective(self):
-        # normalize/token_sequences rewrite "&" to " and ", so "Salt & Bacon Bits"
-        # is a composite the same way "Salt and Bacon Bits" is.
-        self.assertIsNone(self._score("Crackers & Bacon Bits", "bacon"))
+        # "&" is rewritten to " and ", so "Crackers & Bacon Bits" is a composite
+        # the same way "Crackers and Bacon Bits" is - demoted, not deleted.
+        plain = self._score("Wellsley Farms Bacon", "bacon")
+        composite = self._score("Crackers & Bacon Bits", "bacon")
+        self.assertLess(composite, plain)
 
 
 if __name__ == "__main__":
