@@ -63,6 +63,8 @@ this plugs in):
 """
 
 import re
+import threading
+import time
 
 # --- Normalization ----------------------------------------------------
 
@@ -607,6 +609,57 @@ def load_catalog(cur):
         entry["_token_seq"], entry["_raw_seq"] = seq, raw
         catalog.append(entry)
     return catalog
+
+
+# --- Catalog cache (#57) ------------------------------------------------------
+#
+# load_catalog() re-read and re-tokenized every row on every /list, where-to-buy
+# and /prices search request. Measured on the dev catalogue (23,084 rows):
+# ~1.0 s to normalize, ~36 MB resident; match_item on an already-built catalog
+# takes ~5 ms. The catalog only changes when a scrape inserts or retention
+# prunes, so it is cached per worker process and rebuilt when Postgres's own
+# cumulative counters for grocery_prices move.
+#
+# Why those counters and not max(datetime): the index on grocery_prices is
+# (product, store, datetime DESC), which cannot answer max(datetime) without
+# walking every retained row - the very cost being avoided. pg_stat_user_tables
+# is one row, O(1). Its counters are flushed at transaction end with up to about
+# a second's delay, so a new scrape shows up within seconds; CATALOG_MAX_AGE is
+# the backstop if a counter change were ever missed, and a stats reset (counters
+# back to 0) simply looks like a change and rebuilds.
+CATALOG_MAX_AGE = 15 * 60
+_catalog_cache = {"key": None, "built": 0.0, "catalog": None}
+_catalog_lock = threading.Lock()
+
+
+def _catalog_version(cur):
+    cur.execute("""
+        SELECT n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_user_tables
+        WHERE relname = 'grocery_prices' AND schemaname = current_schema()
+    """)
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return tuple(row.values()) if isinstance(row, dict) else tuple(row)
+
+
+def cached_catalog(cur):
+    """load_catalog(), reused until grocery_prices changes (#57).
+
+    Callers must treat the result as read-only: it is shared across requests.
+    match_item() builds new dicts, and app.resolve_item_match() copies rows
+    before adding fields, so neither mutates it.
+    """
+    key = _catalog_version(cur)
+    now = time.monotonic()
+    with _catalog_lock:
+        cache = _catalog_cache
+        if (key is not None and cache["key"] == key and cache["catalog"] is not None
+                and now - cache["built"] < CATALOG_MAX_AGE):
+            return cache["catalog"]
+        catalog = load_catalog(cur)
+        cache.update(key=key, built=now, catalog=catalog)
+        return catalog
 
 
 def match_item(catalog, item_name):
