@@ -1327,7 +1327,12 @@ def _annotate_package_fit(match, needed_qty, needed_unit):
     package_qty = float(match["price"]) / float(match["unit_price"])
     if package_qty <= 0:
         return
-    packages = max(1, math.ceil(needed_qty / package_qty))
+    # Rounded before ceil: package_qty is derived as price / unit_price, which
+    # lands a hair under the true size - a 14 oz can at $1.03 gives 0.87499999
+    # lb, and ceil(0.875 / 0.87499999) = 2 packages at double the cost, for a
+    # list asking for exactly one can (review of #70; ~350 of 20k realistic
+    # size/price pairs hit this). Six places keeps real overage intact.
+    packages = max(1, math.ceil(round(needed_qty / package_qty, 6)))
     match["packages_needed"] = packages
     match["total_cost"] = packages * float(match["price"])
 
@@ -2346,7 +2351,11 @@ def _scale_ingredient_row(row):
     factor = _scale_factor(row["slot_servings"], row["recipe_servings"])
     if amount and factor != 1.0:
         try:
-            amount = _format_amount(float(amount) * factor)
+            # Full precision here; rounding happens once, on the combined
+            # total (_combine_ingredient_rows), which every display and
+            # depletion path goes through. Rounding each part first made three
+            # 1/3-cup servings sum to "0.9999 cup" (review of #70).
+            amount = repr(float(amount) * factor)
         except (TypeError, ValueError):
             pass
     return {"name": row["name"], "amount": amount, "unit": row["unit"]}

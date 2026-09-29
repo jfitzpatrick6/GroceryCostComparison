@@ -62,6 +62,16 @@ class PackageFitTests(unittest.TestCase):
         self.assertEqual(m["packages_needed"], 9)
         self.assertAlmostEqual(m["total_cost"], 53.91)
 
+    def test_exact_size_is_one_package_not_two(self):
+        # Review of #70: "14 oz" against a 14 oz can at $1.03. units.py stores
+        # unit_price = 1.03 / 0.875 per lb, and price / unit_price comes back a
+        # hair under 0.875 - ceil used to make that 2 packages.
+        price = 1.03
+        m = self._match(price, price / (14 / 16), "lb")
+        needed, unit = app._parse_needed_qty("14 oz")
+        app._annotate_package_fit(m, needed, unit)
+        self.assertEqual(m["packages_needed"], 1)
+
     def test_rounds_up_not_down(self):
         m = self._match(10.0, 2.0, "lb")  # 5 lb pack
         app._annotate_package_fit(m, 5.1, "lb")
@@ -92,16 +102,22 @@ class ScalingTests(unittest.TestCase):
 
     def test_scaled_row(self):
         row = {"name": "ground beef", "amount": "1.5", "unit": "lb", "slot_servings": 8, "recipe_servings": 4}
-        self.assertEqual(app._scale_ingredient_row(row)["amount"], "3")
+        self.assertEqual(float(app._scale_ingredient_row(row)["amount"]), 3.0)
 
     def test_non_numeric_amount_passes_through(self):
         row = {"name": "salt", "amount": "a pinch", "unit": None, "slot_servings": 8, "recipe_servings": 4}
         self.assertEqual(app._scale_ingredient_row(row)["amount"], "a pinch")
 
-    def test_scaling_has_no_float_noise(self):
-        # 0.5 tsp pepper (real) scaled 6 -> 4 servings is 1/3 tsp.
+    def test_scaled_thirds_sum_back_to_a_whole(self):
+        # Review of #70: a 1-cup ingredient in a 6-serving recipe, planned three
+        # nights at 2 servings. Rounding each scaled part showed "0.9999 cup".
+        row = {"name": "milk", "amount": "1", "unit": "cup", "slot_servings": 2, "recipe_servings": 6}
+        parts = [app._scale_ingredient_row(row) for _ in range(3)]
+        self.assertEqual(app._combine_ingredient_rows(parts)[0]["amount"], "1")
+
+    def test_scaling_then_combining_has_no_float_noise(self):
         row = {"name": "pepper", "amount": "0.1", "unit": "tsp", "slot_servings": 3, "recipe_servings": 1}
-        self.assertEqual(app._scale_ingredient_row(row)["amount"], "0.3")
+        self.assertEqual(app._combine_ingredient_rows([app._scale_ingredient_row(row)])[0]["amount"], "0.3")
 
 
 class CombineRowsTests(unittest.TestCase):
