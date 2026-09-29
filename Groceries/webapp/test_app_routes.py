@@ -50,6 +50,10 @@ class _Cur:
             self.writes.append((sql.split()[0], params))
         elif "FROM profiles" in sql:
             self._all = []
+        else:
+            # Fail loudly: a fake that silently ignores new SQL goes stale
+            # without anyone noticing (review of #70).
+            raise AssertionError(f"_Cur got unexpected SQL: {sql[:80]}")
 
     def fetchone(self):
         return self._one
@@ -93,8 +97,8 @@ class WhereToBuyRouteTests(unittest.TestCase):
             body = app.app.test_client().get("/list/where-to-buy").data.decode()
         # BJs' package is cheapest for chicken; Tops is the only spaghetti; saffron unmatched.
         self.assertIn("Wellsley Farms Boneless Skinless Chicken Breasts", body)
-        self.assertRegex(body, r"saffron")
         self.assertIn("No price match found", body)
+        self.assertGreater(body.index("saffron"), body.index("No price match found"))
         # Split total = 13.42 + 1.29
         self.assertIn("14.71", body)
 
@@ -134,13 +138,17 @@ class AddWeekToListRouteTests(unittest.TestCase):
         combined = [
             {"name": "ground beef", "amount": "1.5", "unit": "lb", "pantry_have": None, "need_amount": "1.5"},
             {"name": "spaghetti", "amount": "1", "unit": "lb", "pantry_have": None, "need_amount": "1"},
+            # Partly covered: the list must get what's still NEEDED, not the
+            # recipe amount (review of #70 - no fixture exercised this).
+            {"name": "flour", "amount": "2", "unit": "cup", "pantry_have": 0.5, "need_amount": "1.5"},
             {"name": "salt", "amount": "1", "unit": "tsp", "pantry_have": 5.0, "need_amount": "0"},
         ]
         writes, flashes = self._post(combined, {"ground beef": {"id": 7, "qty": "9 lb"}})
         self.assertIn(("UPDATE", ("10.5 lb", 7)), writes)
         self.assertIn(("INSERT", ("spaghetti", "1 lb")), writes)
-        self.assertEqual(len(writes), 2)  # salt is covered by the pantry
-        self.assertTrue(any(re.search(r"1 added.*1 merged.*1 skipped", f) for f in flashes), flashes)
+        self.assertIn(("INSERT", ("flour", "1.5 cup")), writes)
+        self.assertEqual(len(writes), 3)  # salt is covered by the pantry
+        self.assertTrue(any(re.search(r"2 added.*1 merged.*1 skipped", f) for f in flashes), flashes)
 
     def test_no_word_none_in_quantities(self):
         # e750a5e: a unitless, amountless ingredient wrote the literal "None".
@@ -185,6 +193,9 @@ class MarkCookedDepletionTests(unittest.TestCase):
         self.assertEqual(cur.pantry["ground beef"]["amount"], 1.0)
         inserts = [p for v, p in cur.log if v == "INSERT"]
         self.assertEqual(inserts, [("2026-09-27", 2, "dinner", "ground beef", "lb", 2.0, 1.0)])
+        # The slot's old snapshot is cleared first - what makes re-cooking
+        # idempotent rather than stacking depletions (review of #70).
+        self.assertEqual(cur.log[0], ("DELETE", ("2026-09-27", 2, "dinner")))
 
     def test_clamps_at_zero_and_skips_unit_mismatch_and_non_numbers(self):
         cur = self._deplete(
