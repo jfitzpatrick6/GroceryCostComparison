@@ -437,9 +437,23 @@ class BrowseRequestTests(unittest.TestCase):
     """#72: the key comes from the environment, and the request still asks for
     this club's prices."""
 
-    def test_no_constructor_key_literal_in_source(self):
-        import inspect
-        self.assertNotRegex(inspect.getsource(BJs), r"key_[A-Za-z0-9]{8,}")
+    def test_no_constructor_key_literal_in_any_scraper_source(self):
+        # Constructor.io keys are "key_" plus 16 alphanumerics; {16,} avoids
+        # tripping on identifiers like key_fingerprint. Scans every .py under
+        # Groceries/, not just BJs.py - a copy in an old test script is how the
+        # key survived the first pass of #72.
+        import pathlib
+        root = pathlib.Path(BJs.__file__).parent
+        for path in root.rglob("*.py"):
+            self.assertNotRegex(path.read_text(), r"key_[A-Za-z0-9]{16,}", str(path))
+
+    def test_first_page_failure_is_a_failure_not_zero_items(self):
+        # A wrong/rotated key: the API 401s on page 1.
+        with mock.patch.dict("os.environ", {"BJS_CNSTRC_KEY": "k"}), \
+                mock.patch.object(BJs, "_fetch_page", lambda store, page, key: None), \
+                redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "BJS_CNSTRC_KEY"):
+                BJs.main("9999")
 
     def test_missing_key_fails_before_any_request(self):
         with mock.patch.dict("os.environ", {"BJS_CNSTRC_KEY": ""}):

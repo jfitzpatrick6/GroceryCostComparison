@@ -357,9 +357,11 @@ def _browse_params(store, page, key):
     """The browse request as a readable parameter list (#72).
 
     Was one hand-percent-encoded 1,129-character f-string with the API key
-    inline. Rebuilt field by field and checked live against that string:
-    identical total_num_results and identical product ids on every page (see
-    the #72 commit). A list of pairs rather than a dict because
+    inline. Rebuilt field by field and checked live against that string: same
+    total_num_results, and every product the old walk returned is returned by
+    this one with identical price and facets (see the #72 commit). Page-by-page
+    order is NOT comparable - the old URL didn't even agree with itself, which
+    is the bug described next. A list of pairs rather than a dict because
     `fmt_options[hidden_fields]` repeats.
 
     `c` identifies the Constructor.io JS client version BJs' site uses and is
@@ -452,6 +454,17 @@ def _page_bodies(store, key):
 def main(store):
     rows, stats = collect_products(_page_bodies(store, browse_key()), store)
     report("BJs", stats)
+    if not rows and stats["stopped_early"]:
+        # Nothing at all, because the very first page failed. Returning an empty
+        # frame here reported "BJs ok (0 items)" and an OK run verdict (#63) -
+        # which is exactly what a wrong or rotated BJS_CNSTRC_KEY looks like
+        # (the API answers 401 on page 1). Raising makes collector.py record
+        # "BJs FAILED: ..." instead. A walk that fetched something and then
+        # stopped still returns its rows with #96's INCOMPLETE warning.
+        raise RuntimeError(
+            f"BJs returned no products ({stats['stopped_early']}). An HTTP 401/403 above "
+            f"usually means BJS_CNSTRC_KEY is wrong or has been rotated."
+        )
 
     # Imported here rather than at module level: the required test tier does not
     # install pandas (CONTRIBUTING §7, §11 - see the module docstring), and
