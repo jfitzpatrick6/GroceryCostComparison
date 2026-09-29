@@ -331,16 +331,15 @@ def inject_profile_switcher():
     Werkzeug traceback instead of an explanation - the exact failure #68 exists
     to remove. The nav simply shows "nobody" until the database is back.
 
-    Note this still runs DDL per render (ensure_profiles_table), which #66
-    removes. Making it fault-tolerant here does not make that cost go away.
+    Read-only since #66: it used to run ensure_profiles_table plus a COMMIT on
+    every render, i.e. DDL under an ACCESS EXCLUSIVE lock on every page view.
+    The schema now exists before gunicorn starts (migrations.py).
     """
     names = []
     try:
         conn = get_connection()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                ensure_profiles_table(cur)
-                conn.commit()
                 cur.execute("SELECT name FROM profiles ORDER BY name")
                 names = [row["name"] for row in cur.fetchall()]
         finally:
@@ -445,7 +444,6 @@ def profiles():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_profiles_table(cur)
             conn.commit()
             cur.execute("SELECT id, name FROM profiles ORDER BY name")
             rows = cur.fetchall()
@@ -461,7 +459,6 @@ def add_profile():
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                ensure_profiles_table(cur)
                 cur.execute("INSERT INTO profiles (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (name,))
             conn.commit()
         finally:
@@ -621,7 +618,6 @@ def staples():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_staples_table(cur)
             conn.commit()
             if price_data_available(cur):
                 cur.execute("""
@@ -650,7 +646,6 @@ def pin_staple():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            ensure_staples_table(cur)
             cur.execute(
                 "INSERT INTO staples (product, store) VALUES (%s, %s) ON CONFLICT (product, store) DO NOTHING",
                 (product, store),
@@ -706,8 +701,6 @@ def grocery_list():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_list_table(cur)
-            ensure_pantry_table(cur)
             conn.commit()
             cur.execute("""
                 SELECT id, name, qty, checked, added_by, checked_by,
@@ -775,7 +768,6 @@ def add_list_item():
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                ensure_list_table(cur)
                 cur.execute(
                     "INSERT INTO grocery_list_items (name, qty, added_by) VALUES (%s, %s, %s)",
                     (name, qty or None, active_profile()),
@@ -916,10 +908,8 @@ def check_list_item():
             # checked_by only.
             cur.execute("SELECT name, qty FROM grocery_list_items WHERE id = %s", (item_id,))
             item = cur.fetchone()
-            if checked:
-                ensure_pantry_table(cur)
-                if item:
-                    restock_pantry(cur, item[0], item[1], updated_by=active_profile())
+            if checked and item:
+                restock_pantry(cur, item[0], item[1], updated_by=active_profile())
         conn.commit()
     finally:
         conn.close()
@@ -1009,7 +999,6 @@ def pantry():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_pantry_table(cur)
             conn.commit()
             cur.execute("SELECT id, name, amount, unit, updated_by, threshold FROM pantry_items ORDER BY name")
             items = cur.fetchall()
@@ -1048,7 +1037,6 @@ def set_pantry_item():
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                ensure_pantry_table(cur)
                 cur.execute("SELECT id FROM pantry_items WHERE lower(name) = lower(%s)", (name,))
                 existing = cur.fetchone()
                 if existing:
@@ -1165,7 +1153,6 @@ def where_to_buy():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_list_table(cur)
             conn.commit()
             cur.execute(
                 "SELECT id, name, qty, pinned_product, pinned_store "
@@ -1391,7 +1378,6 @@ def recipes():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_recipes_tables(cur)
             conn.commit()
             cur.execute("""
                 SELECT r.id, r.name, r.servings, count(i.id) AS ingredient_count
@@ -1424,7 +1410,6 @@ def new_recipe():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            ensure_recipes_tables(cur)
             cur.execute(
                 "INSERT INTO recipes (name, notes, servings) VALUES (%s, %s, %s) RETURNING id",
                 (name, notes or None, servings),
@@ -1681,10 +1666,6 @@ def planner():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_planner_table(cur)
-            ensure_recipes_tables(cur)
-            ensure_planner_extras_table(cur)
-            ensure_cook_depletions_table(cur)
             conn.commit()
             cur.execute("""
                 SELECT s.day_of_week, r.id AS recipe_id, r.name AS recipe_name, s.cooked, s.cooked_by,
@@ -1770,7 +1751,6 @@ def set_planner_slot():
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                ensure_planner_table(cur)
                 cur.execute("""
                     INSERT INTO meal_plan_slots (week_start, day_of_week, meal, recipe_id)
                     VALUES (%s, %s, %s, %s)
@@ -1799,7 +1779,6 @@ def remove_planner_recipe():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            ensure_planner_table(cur)
             cur.execute(
                 "DELETE FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s "
                 "AND meal = %s AND recipe_id = %s",
@@ -1828,7 +1807,6 @@ def add_planner_extra():
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                ensure_planner_extras_table(cur)
                 cur.execute(
                     "INSERT INTO meal_plan_extras (week_start, day_of_week, meal, name, amount, unit) "
                     "VALUES (%s, %s, %s, %s, %s, %s)",
@@ -1855,7 +1833,6 @@ def remove_planner_extra():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            ensure_planner_extras_table(cur)
             cur.execute("DELETE FROM meal_plan_extras WHERE id = %s", (extra_id,))
         conn.commit()
     finally:
@@ -1880,7 +1857,6 @@ def set_planner_servings():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            ensure_planner_table(cur)
             cur.execute(
                 "UPDATE meal_plan_slots SET servings = %s WHERE week_start = %s AND day_of_week = %s "
                 "AND meal = %s AND recipe_id = %s",
@@ -1922,7 +1898,6 @@ def deplete_pantry_for_slot(cur, week_start, day_of_week, meal):
     Re-running this (e.g. cook -> undo -> cook again) always takes a new
     snapshot from current pantry state, matching "mark cooked" being a
     one-tap action with no confirmation step."""
-    ensure_cook_depletions_table(cur)
     cur.execute(
         "DELETE FROM cook_depletions WHERE week_start = %s AND day_of_week = %s AND meal = %s",
         (week_start, day_of_week, meal),
@@ -1971,8 +1946,6 @@ def adjust_used():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_cook_depletions_table(cur)
-            ensure_pantry_table(cur)
             cur.execute(
                 "SELECT id, pantry_before FROM cook_depletions WHERE week_start = %s AND day_of_week = %s "
                 "AND meal = %s AND ingredient_name = %s AND unit IS NOT DISTINCT FROM %s",
@@ -2010,8 +1983,6 @@ def mark_cooked():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_planner_table(cur)
-            ensure_pantry_table(cur)
             cur.execute(
                 "SELECT id, recipe_id FROM meal_plan_slots WHERE week_start = %s AND day_of_week = %s AND meal = %s",
                 (week_start, day_of_week, meal),
@@ -2052,7 +2023,6 @@ def get_week_ingredients(cur, week_start):
     #36's job later). Includes loose ad-hoc extras (#50) and recipe amounts
     scaled per-slot (#47) - both participate exactly like base recipe
     ingredients."""
-    ensure_planner_extras_table(cur)
     cur.execute("""
         SELECT i.name, i.amount, i.unit, s.servings AS slot_servings, r.servings AS recipe_servings
         FROM meal_plan_slots s
@@ -2117,7 +2087,6 @@ def slot_ingredient_lines(cur, week_start, day_of_week, meal):
     """Same combined (name, unit, amount) shape as get_week_ingredients, but
     scoped to one day's meal - what "Mark cooked" actually depletes from
     pantry and what "Used tonight" (#48) edits."""
-    ensure_planner_extras_table(cur)
     cur.execute("""
         SELECT i.name, i.amount, i.unit, s.servings AS slot_servings, r.servings AS recipe_servings
         FROM meal_plan_slots s
@@ -2143,7 +2112,6 @@ def apply_pantry(cur, combined):
     when both the need and the pantry have a clean numeric amount and the
     exact same unit; anything else is left as a full need - conservative
     on purpose, never guesses its way into subtracting the wrong thing."""
-    ensure_pantry_table(cur)
     for ing in combined:
         ing["pantry_have"] = None
         ing["need_amount"] = ing["amount"]
@@ -2505,7 +2473,6 @@ def resolve_purchase_amount(cur, name, amount_str, unit):
     if not measure_words:
         return None
 
-    ensure_ingredient_conversions_table(cur)
     cur.execute(
         "SELECT grams_per_unit FROM ingredient_conversions WHERE lower(name) = lower(%s) AND unit = %s",
         (name, unit),
@@ -2538,7 +2505,6 @@ def history():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_planner_table(cur)
             conn.commit()
             cur.execute("""
                 SELECT r.id, r.name, count(*) AS times_cooked, max(s.cooked_at) AS last_cooked
@@ -2565,7 +2531,6 @@ def readd_recipe():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            ensure_planner_table(cur)
             cur.execute(
                 "SELECT day_of_week FROM meal_plan_slots WHERE week_start = %s AND meal = 'dinner'",
                 (week_start,),
@@ -2594,7 +2559,6 @@ def planner_ingredients():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_planner_table(cur)
             conn.commit()
             combined = get_week_ingredients(cur, week_start)
             apply_pantry(cur, combined)
@@ -2638,8 +2602,6 @@ def add_week_to_list():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_planner_table(cur)
-            ensure_list_table(cur)
             conn.commit()
             combined = get_week_ingredients(cur, week_start)
             apply_pantry(cur, combined)

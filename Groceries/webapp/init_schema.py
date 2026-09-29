@@ -29,6 +29,7 @@ import time
 import psycopg2
 
 import app
+import migrations
 
 RETRIES = int(os.getenv("INIT_SCHEMA_RETRIES", "30"))
 DELAY_SECONDS = float(os.getenv("INIT_SCHEMA_DELAY_SECONDS", "2"))
@@ -48,9 +49,11 @@ def main():
         try:
             conn = app.get_connection(connect_timeout=CONNECT_TIMEOUT)
             with conn.cursor() as cur:
-                app.ensure_app_schema(cur)
+                applied = migrations.migrate(cur)
+                version = migrations.current_version(cur)
             conn.commit()
-            print(f"init_schema: app schema ready (attempt {attempt})", flush=True)
+            done = f"applied {applied}" if applied else "nothing to apply"
+            print(f"init_schema: app schema at version {version}, {done} (attempt {attempt})", flush=True)
             return 0
         except psycopg2.OperationalError as e:
             # Could not connect - the retryable case (db still starting).
