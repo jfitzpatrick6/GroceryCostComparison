@@ -286,7 +286,10 @@ def scrape_store(retailer_slug, host, calculate_rate_per_unit, categories=True):
                             if parsed:
                                 if categories:
                                     parsed["Category"] = [path]
-                                rows.append(pd.DataFrame.from_dict(parsed))
+                                # One dict per item, one DataFrame at the end
+                                # (#74): this used to build a one-row DataFrame
+                                # per item - ~17,500 for Tops - then concat them.
+                                rows.append({k: v[0] for k, v in parsed.items()})
                         except Exception as e:
                             print(f"[{retailer_slug}] item parse error: {e}")
                             print(item)
@@ -302,6 +305,6 @@ def scrape_store(retailer_slug, host, calculate_rate_per_unit, categories=True):
     # ~1,700 Tops products (#96 measured the cross-listing). The first listing
     # wins, which is the department walk order - a real department before the
     # dynamic "sales" collection.
-    return pd.concat(rows, ignore_index=True).drop_duplicates(
+    return pd.DataFrame(rows, columns=["Product", "Price", "Rate", "Size", "Category"]).drop_duplicates(
         subset=["Product", "Price", "Rate", "Size"], ignore_index=True
     )
