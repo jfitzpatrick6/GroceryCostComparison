@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Find a product - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<a class="backlink" href="/list">&laquo; Back to list</a>
+<div class="page-head">
+    <h1>Find the actual product</h1>
+</div>
+<p class="subtitle">
+    Search what the stores really call it and pick the one you mean. An item added
+    this way is <strong>pinned</strong> to that product, so it keeps pricing from it
+    instead of being re-guessed against 20,000 other products every time the page
+    loads.
+</p>
+
+<form method="get" class="form-row">
+    <div class="field">
+        <label class="label" for="q">Search</label>
+        <input type="search" id="q" name="q" value="{{ query }}" autocomplete="off"
+               placeholder="e.g. bacon, chicken breast, 2% milk">
+    </div>
+    <button type="submit" class="btn btn--primary">Search</button>
+    {% if query %}<a class="btn" href="/list/pick">Clear</a>{% endif %}
+</form>
+
+{% if not query %}
+<div class="card">
+    <div class="empty">
+        <div class="empty__glyph" aria-hidden="true">&#128269;</div>
+        <div class="empty__title">Type something to search for</div>
+        <p>Short and generic works best &mdash; &ldquo;chicken&rdquo; finds more than
+        &ldquo;boneless skinless chicken breast&rdquo;. Results are the latest scraped
+        price per product per store, cheapest per unit first.</p>
+    </div>
+</div>
+{% elif rows %}
+<p class="hint">
+    {{ rows|length }} result{{ '' if rows|length == 1 else 's' }}{% if rows|length >= 100 %}
+    (showing the first 100 &mdash; narrow the search to see more){% endif %},
+    cheapest per unit first.
+</p>
+<ul class="pick-list">
+    {% for r in rows %}
+    <li class="pick">
+        <form method="post" action="/list/add_pinned" class="pick__form">
+            <input type="hidden" name="name" value="{{ r.product }}">
+            <input type="hidden" name="product" value="{{ r.product }}">
+            <input type="hidden" name="store" value="{{ r.store }}">
+            <div class="pick__main">
+                <span class="pick__name">{{ r.product }}</span>
+                <span class="row row--tight">
+                    <span class="badge badge--store">{{ r.store }}</span>
+                    {% if r.size %}<span class="badge badge--muted">{{ r.size }}</span>{% endif %}
+                </span>
+            </div>
+            <div class="pick__price">
+                <span class="price">${{ "%.2f"|format(r.price) if r.price is not none else "?" }}</span>
+                {% if r.unit_price is not none %}
+                <span class="rate">${{ "%.2f"|format(r.unit_price) }} / {{ r.unit }}</span>
+                {% endif %}
+            </div>
+            <div class="pick__qty">
+                <label class="sr-only" for="qty-{{ loop.index }}">Quantity for {{ r.product }}</label>
+                <input class="num-input" type="text" id="qty-{{ loop.index }}" name="qty"
+                       placeholder="qty" autocomplete="off">
+            </div>
+            <div class="pick__action">
+                <button type="submit" class="btn btn--sm btn--primary">Add</button>
+            </div>
+        </form>
+    </li>
+    {% endfor %}
+</ul>
+{% elif not has_prices %}
+<div class="card">
+    <div class="empty">
+        <div class="empty__glyph" aria-hidden="true">&#128230;</div>
+        <div class="empty__title">No prices have been scraped yet</div>
+        <p>There is no catalogue to search. Run a scrape
+        (<code>docker compose run --rm grocery_scraper</code>) and this page will
+        let you pick from every product your stores actually carry.</p>
+        <p class="faint">Until then, add items as free text from the
+        <a href="/list">grocery list</a> &mdash; they will show as unmatched rather
+        than being priced.</p>
+    </div>
+</div>
+{% else %}
+<div class="card">
+    <div class="empty">
+        <div class="empty__glyph" aria-hidden="true">&#128533;</div>
+        <div class="empty__title">Nothing matched &ldquo;{{ query }}&rdquo;</div>
+        <p>Try a shorter or more generic word &mdash; this is a plain substring match against
+        retailer product names, so &ldquo;chicken&rdquo; finds more than &ldquo;chicken
+        breast&rdquo;. If it genuinely isn&rsquo;t stocked, add it as free text from the
+        <a href="/list">grocery list</a> instead.</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

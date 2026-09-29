@@ -48,6 +48,16 @@
         </div>
         <button type="submit" class="btn btn--primary">Add</button>
     </form>
+    {# The escape hatch from guessing retailer vocabulary (#98). Typed text is
+       fuzzy-matched against ~20k products and can land on the wrong one; picking
+       binds the item to a specific product instead. Kept beside the quick-add box
+       rather than replacing it, because typing "eggs" and pressing Enter has to
+       stay the fast path for the common case. #}
+    <p class="hint">
+        Not finding the right thing, or getting a wrong match?
+        <a href="/list/pick">Search the catalogue and pick the exact product</a> &mdash;
+        it stays pinned instead of being re-guessed.
+    </p>
 </div>
 
 <div class="table-wrap table--cards">
@@ -81,7 +91,12 @@
                         </button>
                     </form>
                 </td>
-                <td data-label="Item" class="card-title-cell"><span class="item-name">{{ item.name }}</span>{% if item.qty %} <span class="muted">&middot; {{ item.qty }}</span>{% endif %}</td>
+                <td data-label="Item" class="card-title-cell">
+                    <span class="item-name">{{ item.name }}</span>{% if item.qty %} <span class="muted">&middot; {{ item.qty }}</span>{% endif %}
+                    {% if item.pinned_product %}
+                    <span class="badge badge--ok" title="Pinned to a specific product you chose, so it is not being fuzzy-matched">pinned</span>
+                    {% endif %}
+                </td>
                 <td data-label="Qty" class="muted">{{ item.qty or "" }}</td>
                 <td data-label="Cheapest match">
                     {% if item.match %}

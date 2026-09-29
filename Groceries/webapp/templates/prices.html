@@ -41,11 +41,24 @@
                 <td class="num rate">{% if row.unit_price is not none %}${{ "%.2f"|format(row.unit_price) }} / {{ row.unit }}{% else %}&mdash;{% endif %}</td>
                 <td class="faint small nowrap">{{ row.datetime.strftime("%d %b %H:%M") if row.datetime else "" }}</td>
                 <td class="num">
-                    <form method="post" action="/staples/pin">
-                        <input type="hidden" name="product" value="{{ row.product }}">
-                        <input type="hidden" name="store" value="{{ row.store }}">
-                        <button type="submit" class="btn btn--sm btn--quiet" title="Pin to staples so it is always compared across stores">Pin</button>
-                    </form>
+                    {# Two different commitments, side by side, and the labels say
+                       which is which: "Add" puts this exact product on the list
+                       now, "Pin" remembers it as a weekly staple. Before this the
+                       page was a dead end - you could find the right product and
+                       then had no way to get it onto the list. #}
+                    <div class="row row--tight">
+                        <form method="post" action="/list/add_pinned">
+                            <input type="hidden" name="name" value="{{ row.product }}">
+                            <input type="hidden" name="product" value="{{ row.product }}">
+                            <input type="hidden" name="store" value="{{ row.store }}">
+                            <button type="submit" class="btn btn--sm" title="Add this exact product to the grocery list, pinned to it">Add</button>
+                        </form>
+                        <form method="post" action="/staples/pin">
+                            <input type="hidden" name="product" value="{{ row.product }}">
+                            <input type="hidden" name="store" value="{{ row.store }}">
+                            <button type="submit" class="btn btn--sm btn--quiet" title="Pin to staples so it is always compared across stores">Pin</button>
+                        </form>
+                    </div>
                 </td>
             </tr>
             {% else %}

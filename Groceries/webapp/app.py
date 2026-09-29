@@ -6,7 +6,7 @@ import re
 import psycopg2
 import psycopg2.extras
 import requests
-from flask import Flask, abort, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 
 import matching
 
@@ -146,6 +146,53 @@ def price_freshness_from_catalog(catalog):
         # it without saying so.
         "missing_stores": [s for s in EXPECTED_STORES if s not in latest],
     }
+
+
+def resolve_item_match(catalog, item):
+    """The price rows a list item should be priced from (#98).
+
+    Returns the same shape both callers expect - a dict of store -> catalog row -
+    so where_to_buy can compare across stores and /list can pick the cheapest.
+
+    An item may carry pinned_product/pinned_store, set when the user chose a
+    specific catalogue product via /list/pick instead of typing free text. In that
+    case the match is an exact lookup, not a fuzzy one: the whole point of picking
+    is that the user has already decided what "bacon" means, and re-running the
+    fuzzy matcher on their own choice would reintroduce exactly the ambiguity they
+    just removed ("bacon" -> "TOPS Bacon Chips", #97/#99).
+
+    A pinned item prices from its one store only. Comparing a deliberately chosen
+    product across stores would mean substituting a different product for the one
+    the user picked, which is the mis-match this exists to prevent.
+
+    Falls back to fuzzy matching when the item is not pinned, and also when a
+    pinned product has vanished from the catalogue - delisted, renamed, or the
+    store dropped it. A stale pin must degrade to "try to match the text" rather
+    than to "no price", because the item is still on the list and still needs
+    buying; silently pricing nothing would be the confident-wrong-answer failure
+    in reverse.
+    """
+    pinned_product = item.get("pinned_product")
+    pinned_store = item.get("pinned_store")
+    if pinned_product and pinned_store:
+        for row in catalog:
+            if row["product"] == pinned_product and row["store"] == pinned_store:
+                # A COPY, not the catalog row itself, and this is load-bearing
+                # rather than defensive. where_to_buy calls _annotate_package_fit
+                # on every row it prices, which mutates packages_needed and
+                # total_cost in place. Returning the shared dict meant two list
+                # items pinned to the same product aliased one object, so the last
+                # annotation won for both: two pinned Wellsley Farms Bacon at 1 lb
+                # and 5 lb both rendered $35.96 and the split total came to
+                # $71.92 instead of $44.95 - a confident wrong number, reachable by
+                # clicking Add twice. matching.match_item already copies for
+                # exactly this reason; the pin path must too.
+                #
+                # _tokens is dropped for the same reason match_item drops it: it is
+                # the matcher's working state, not something a template should see.
+                chosen = {k: v for k, v in row.items() if k != "_tokens"}
+                return {chosen["store"]: chosen}
+    return matching.best_per_store(matching.match_item(catalog, item["name"]))
 
 
 @app.route("/healthz")
@@ -397,6 +444,12 @@ def ensure_list_table(cur):
     """)
     cur.execute("ALTER TABLE grocery_list_items ADD COLUMN IF NOT EXISTS added_by TEXT;")
     cur.execute("ALTER TABLE grocery_list_items ADD COLUMN IF NOT EXISTS checked_by TEXT;")
+    # A list item can be bound to a specific catalogue product+store instead of
+    # being fuzzy-matched from its text (#98). Both columns are nullable: an
+    # unpinned item - anything typed freehand, or added by the planner - has NULLs
+    # and matches exactly as before. See resolve_item_match().
+    cur.execute("ALTER TABLE grocery_list_items ADD COLUMN IF NOT EXISTS pinned_product TEXT;")
+    cur.execute("ALTER TABLE grocery_list_items ADD COLUMN IF NOT EXISTS pinned_store TEXT;")
 
 
 @app.route("/list")
@@ -408,7 +461,8 @@ def grocery_list():
             ensure_pantry_table(cur)
             conn.commit()
             cur.execute("""
-                SELECT id, name, qty, checked, added_by, checked_by
+                SELECT id, name, qty, checked, added_by, checked_by,
+                       pinned_product, pinned_store
                 FROM grocery_list_items
                 ORDER BY checked, added_at
             """)
@@ -428,7 +482,10 @@ def grocery_list():
             if price_data_available(cur):
                 catalog = matching.load_catalog(cur)
                 for item in items:
-                    per_store = matching.best_per_store(matching.match_item(catalog, item["name"]))
+                    # resolve_item_match prefers an exact catalogue pin (#98) and
+                    # only falls back to fuzzy matching for unpinned items or a
+                    # pin whose product has left the catalogue.
+                    per_store = resolve_item_match(catalog, item)
                     item["match"] = min(
                         per_store.values(), key=lambda m: (m["unit_price"] is None, m["unit_price"] or 0)
                     ) if per_store else None
@@ -477,6 +534,111 @@ def add_list_item():
             conn.commit()
         finally:
             conn.close()
+    return redirect(url_for("grocery_list"))
+
+
+@app.route("/list/pick")
+def list_pick():
+    """Search the real catalogue and pick a specific product (#98).
+
+    The free-text add box asks the user to guess retailer vocabulary, and the
+    fuzzy matcher then guesses what they meant - two guesses stacked, with the
+    second one invisible before #97. This is the escape hatch: look the product
+    up by what it is actually called and bind the list item to it, so neither
+    guess happens.
+
+    Server-rendered rather than a JS autocomplete because the app has no
+    JavaScript layer and adding one for this would mean a build step or a CDN,
+    both of which the design system deliberately rules out (#101). A submitted
+    search is one round trip and works with JS disabled, on any phone browser.
+    """
+    query = request.args.get("q", "").strip()
+    rows = []
+    has_prices = False
+    if query:
+        # Escape LIKE's own metacharacters. Without this `q=%` matches every row
+        # and `q=2%` silently means "contains 2" - a wrong answer to a reasonable
+        # query. ESCAPE '\' is named explicitly rather than relying on the
+        # backslash default, which standard_conforming_strings can affect.
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                has_prices = price_data_available(cur)
+                if has_prices:
+                    # Same ILIKE as /prices, so a term that finds something there
+                    # finds the same things here. Ordered by unit rate then name
+                    # because the point is comparing like-for-like prices, and
+                    # capped so a one-letter query can't page 20k rows into a form.
+                    #
+                    # price IS NOT NULL is not cosmetic: a pinned row with a NULL
+                    # price would make float(None) raise in where_to_buy and
+                    # "%.2f"|format(None) fail in list.html, so both pages 500 -
+                    # and with /list down there is no Remove button left to undo
+                    # the pin. Don't offer what can't be priced.
+                    #
+                    # ESCAPE is written inline (the '\\' in this Python literal is
+                    # one backslash in the SQL) rather than relying on LIKE's
+                    # default escape character, which standard_conforming_strings
+                    # can affect.
+                    cur.execute("""
+                        SELECT product, store, price, size, unit_price, unit
+                        FROM grocery_prices_latest
+                        WHERE (product ILIKE %s ESCAPE '\\' OR store ILIKE %s ESCAPE '\\')
+                          AND price IS NOT NULL
+                        ORDER BY (unit_price IS NULL), unit_price, product
+                        LIMIT 100
+                    """, (like, like))
+                    rows = cur.fetchall()
+        finally:
+            conn.close()
+    # has_prices distinguishes "your search found nothing" from "there is nothing
+    # to search yet". Without it a fresh install tells the user their search term
+    # was wrong, which sends them rephrasing instead of running a scrape.
+    return render_template("pick.html", query=query, rows=rows, has_prices=has_prices)
+
+
+@app.route("/list/add_pinned", methods=["POST"])
+def add_pinned_list_item():
+    """Add a list item bound to a specific catalogue product+store (#98).
+
+    The pin is what makes the choice stick: resolve_item_match() looks the pair
+    up exactly instead of re-running the fuzzy matcher on the item's text, so
+    "bacon" picked as Wellsley Farms Bacon at BJs stays that product forever
+    rather than drifting to whatever scores highest next scrape.
+    """
+    name = request.form.get("name", "").strip()
+    product = request.form.get("product", "").strip()
+    store = request.form.get("store", "").strip()
+    qty = request.form.get("qty", "").strip()
+    if name and product and store:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                # No ensure_list_table() here, deliberately: CONTRIBUTING §8
+                # forbids adding an ensure_* call site in a request handler, and
+                # each one takes an AccessExclusiveLock on every request even when
+                # the columns already exist. init_schema.py creates every
+                # app-owned table at startup (#82), so the table is guaranteed to
+                # exist by the time any request runs. #66 removes the pre-existing
+                # call sites; this one simply does not add another.
+                cur.execute(
+                    "INSERT INTO grocery_list_items "
+                    "(name, qty, added_by, pinned_product, pinned_store) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (name, qty or None, active_profile(), product, store),
+                )
+            conn.commit()
+            flash(f"Added {name} to your list, pinned to {product} at {store}.", "success")
+        finally:
+            conn.close()
+    else:
+        # A missing field here means a broken form or a hand-crafted POST, not a
+        # user mistake - the picker always sends all three. Say so rather than
+        # silently adding nothing.
+        flash("Could not add that item: the product and store it should be pinned "
+              "to were missing.", "error")
     return redirect(url_for("grocery_list"))
 
 
@@ -713,7 +875,10 @@ def where_to_buy():
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             ensure_list_table(cur)
             conn.commit()
-            cur.execute("SELECT id, name, qty FROM grocery_list_items WHERE checked = FALSE ORDER BY added_at")
+            cur.execute(
+                "SELECT id, name, qty, pinned_product, pinned_store "
+                "FROM grocery_list_items WHERE checked = FALSE ORDER BY added_at"
+            )
             items = cur.fetchall()
 
             per_item = []
@@ -731,10 +896,12 @@ def where_to_buy():
                 for item in items:
                     # One product per store (the best identity match, not
                     # just "cheapest thing that loosely matched") - see
-                    # matching.best_per_store. Anything left unmatched here
+                    # matching.best_per_store. Items the user pinned to a
+                    # specific catalogue product resolve to exactly that
+                    # product instead (#98). Anything left unmatched here
                     # shows up under "No price match found for" rather than
                     # disappearing (#25's "done" bar).
-                    by_store = matching.best_per_store(matching.match_item(catalog, item["name"]))
+                    by_store = resolve_item_match(catalog, item)
                     if not by_store:
                         unmatched.append(item)
                         continue
