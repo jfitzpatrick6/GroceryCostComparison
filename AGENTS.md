@@ -90,11 +90,12 @@ unaliased because its FDC entry lacks cup data. Follow this in new code.
 
 ## Known state (verify before relying on this)
 
-Rewritten 2026-09-29 (#128) after the "Family ready" milestone work. The tracker
+Rewritten 2026-09-29 (#128, #140) after the "Family ready" milestone work. The tracker
 moves; check the issues.
 
 - **Walmart scraping does not work** - bot-verification wall, deliberately not
-  circumvented (#12). Tops/Aldi work via Instacart's white-label platform; BJs
+  circumvented (#12) - and is skipped unless `SCRAPE_WALMART=1` (#132). A store
+  that returns 0 items counts as FAILED in the run summary. Tops/Aldi work via Instacart's white-label platform; BJs
   via its search API, with its public key in `.env` as `BJS_CNSTRC_KEY` (#72).
 - Tops/Aldi **cannot be pointed at a chosen store** (#43, deliberately out of
   the milestone) - they use whatever the host's IP geolocates to. A wrong
@@ -119,4 +120,10 @@ moves; check the issues.
   `pg_dump` backups to `backups/` (#60).
 - **Tests**: pure helpers and the money/pantry routes are covered (#70); USDA
   matching has a live tier that runs when `USDA_API_KEY` is set. Matching still
-  ranks by product name only - store departments (#114) are the next step.
+  ranks by product name only. Tops and BJs products carry the store's own
+  department (#114), shown on search but not used for ranking - that needs a
+  measured query->department mapping first. Aldi exposes no departments.
+- **Prices are shelf prices, sales included** (#19): Instacart's price is
+  already the current sale price; BJs uses an active club sale from
+  `sale_prices`. `regular_price` records what it was. Online-only prices and
+  BJs coupons are deliberately excluded (#96, #139).
