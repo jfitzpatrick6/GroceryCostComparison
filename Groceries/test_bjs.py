@@ -377,5 +377,60 @@ class CollectProductsAccountingTests(unittest.TestCase):
         self.assertEqual(requested, [1, 2, 3], "walked past the end-of-catalogue page")
 
 
+
+class ParseSizeTests(unittest.TestCase):
+    """#73. Every name is verbatim from the 2026-09-29 catalogue export; the
+    expected sizes were checked by hand against the name, and the old outputs
+    are noted where they were wrong."""
+
+    def test_multipacks_multiply_out(self):
+        for name, expected in [
+            # old: 12 oz - one bag priced as all six
+            ("Diana Dry Lentils, 6 Bags/12 oz.", "72 oz"),
+            # old: "3 pk" - no period before the slash
+            ("Galbani Fresh Mozzarella Cheese Pouches, 3 pk/6 oz.", "18 oz"),
+            # old: "24 pk" - space after the slash
+            ("IBC Root Beer Made with Sugar Cane, 24 pk./ 12 oz.", "288 oz"),
+            # old: "2 pk" - "fl oz" never matched "fl. oz"
+            ("La Colombe Unsweetened Brazilian Cold Brew Coffee, 2 pk./42 fl oz.", "84 fl oz"),
+            ("Oh Snap! Dilly Bites Classic Dill Pickle Snack Packs, 12 ct./3.25 fl.oz.", "39 fl oz"),
+            # old: "18 ct" - ml was not a unit
+            ("Vita Coco Coconut Water, 18 ct./330 ml.", "5940 ml"),
+            # the old regex already handled these; they must not regress
+            ("Wellsley Farms Premium Chunk Chicken Breast in Water, 6 ct./12.5 oz.", "75 oz"),
+            ("Perdue No Antibiotics Ever Breaded Chicken Breast Nuggets, 3 pk./0.75 lb.", "2.25 lb"),
+            ("Coca-Cola Soda Soft Drink, Bottles, 4 pk./2 Liters", "8 l"),
+            ("Lotus Biscoff Cookies, 32 ct./2 pk.", "64 pk"),
+        ]:
+            self.assertEqual(BJs.parse_size(name), expected, name)
+
+    def test_no_size_read_out_of_a_fraction(self):
+        # old: "3 lb", from "1/3 lb"
+        self.assertEqual(
+            BJs.parse_size("Butterball Frozen Turkey Burgers, Original Seasoned, 1/3 lb. Patties, 12 ct."),
+            "12 ct",
+        )
+
+    def test_size_first_names_are_not_multiplied(self):
+        # old: "378.0 ct" of bacon
+        self.assertEqual(BJs.parse_size("Hormel Black Thick Cut Fully Cooked Bacon, 10.5 oz./36 ct."), "10.5 oz")
+
+    def test_per_item_range_falls_back_to_the_count(self):
+        self.assertEqual(BJs.parse_size("Frito-Lay Variety Pack of Snacks and Chips, 30 ct./1.5-2 oz."), "30 ct")
+
+    def test_a_period_is_not_a_number(self):
+        # old: ". l" from "Co. Little", which units.py cannot parse
+        self.assertEqual(BJs.parse_size("The Little Potato Co. Little Yellows, 3 lbs."), "3 lb")
+
+    def test_a_weight_range_is_no_size_not_its_upper_bound(self):
+        self.assertEqual(
+            BJs.parse_size("Wellsley Farms Fresh Pork St. Louis Style Spare Ribs, 5-8.5 lbs."), "N/A"
+        )
+
+    def test_plain_sizes_and_no_size(self):
+        self.assertEqual(BJs.parse_size("Tyson Boneless Skinless Chicken Breast, 10 lbs."), "10 lb")
+        self.assertEqual(BJs.parse_size("Wellsley Farms 1/2 Sheet Gold & Chocolate Base Cake, Serves 32"), "N/A")
+
+
 if __name__ == "__main__":
     unittest.main()

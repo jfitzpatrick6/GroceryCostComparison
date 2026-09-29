@@ -27,13 +27,67 @@ from units import calculate_rate_per_unit
 
 # Size/unit vocabulary BJs embeds in product names ("... 16 oz", "Family Pack
 # 2.5 lb"). Was spelled out three times inline in two regexes below; kept as one
-# alternation with no capturing group of its own so the group numbering the
-# callers depend on (match.group(1); calcmatch.group(1)/(3)/(4)) is unchanged.
+# alternation with no capturing group of its own, so _SIZE_RE's group(1) is the
+# whole size phrase.
 _SIZE_UNITS = r"pc|lb|oz|fl. oz|gal|each|ct|count|dozen|ib|pk|pint|l|liter|qt"
-# "16 oz" -> take the whole matched size phrase as-is.
-_SIZE_RE = re.compile(rf"(([\d.]+)\s*({_SIZE_UNITS}))")
-# "5 oz/12 count" style ratios -> multiply the two quantities into one size.
-_SIZE_RATIO_RE = re.compile(rf"([\d.]+)\s*({_SIZE_UNITS}).\/([\d.]+)\s*({_SIZE_UNITS})")
+# "16 oz" -> take the whole matched size phrase as-is. The lookbehind stops it
+# reading a size out of the tail of a fraction: "Butterball Frozen Turkey
+# Burgers, 1/3 lb. Patties, 12 ct." was stored as "3 lb" (#73).
+#
+# The number is \d+(\.\d+)? rather than [\d.]+: the old class matched a bare
+# ".", so "The Little Potato Co. Little Yellows, 3 lbs." parsed as ". l" (from
+# "co. little") and units.py raised on float("."), losing the real 3 lb.
+#
+# "-" is in the lookbehind so a weight RANGE yields no size at all. Without it,
+# "Spare Ribs, 5-8.5 lbs." read as "8.5 lb" - the upper bound, a confident
+# wrong $/lb where the honest answer is none (CONTRIBUTING §6).
+_SIZE_RE = re.compile(rf"(?<![\d./-])((\d+(?:\.\d+)?)\s*({_SIZE_UNITS}))")
+
+# Multi-packs: "<count> <pack word> / <each size> <unit>" -> one total size.
+# Built from every BJs name containing "/" in the 2026-09-29 catalogue (961 of
+# 3,099), not from the pattern's intent (#73). The regex this replaces required
+# exactly one character between the pack word and the slash, which happened to
+# be the period in "pk./" and "ct./", so it matched 928 of those names - #73's
+# "never matches" was wrong - but it missed every real variant below, and each
+# miss fell back to the pack COUNT or the per-item size as if it were the total:
+#   "6 Bags/12 oz."          -> stored 12 oz, real total 72 oz (6x the $/lb)
+#   "3 pk/6 oz."             -> stored "3 pk" (no period before the slash)
+#   "12 pk./ 2 oz."          -> stored "12 pk" (space after the slash)
+#   "2 pk./42 fl oz."        -> stored "2 pk" ("fl. oz" in _SIZE_UNITS means
+#                               fl + any char + " oz", so "fl oz" never matched)
+#   "12 ct./3.25 fl.oz."     -> stored "12 ct"
+#   "18 ct./330 ml."         -> stored "18 ct" (ml was not a unit here)
+# Also kept working, which the old regex got right: "4 pk./2 Liters" (8 l) and
+# "Lotus Biscoff Cookies, 32 ct./2 pk." (64 each). A range per item ("30 ct./
+# 1.5-2 oz.") deliberately does not match: there is no single total, and the
+# pack count is the honest fallback. Size-first names ("10.5 oz./36 ct.") don't
+# match either and fall to the plain size; the old regex multiplied those into
+# nonsense like "378 ct" of bacon.
+_PACK_SIZE_RE = re.compile(
+    r"(?<![\d./])(\d+(?:\.\d+)?)\s*(?:pk|ct|count|bags?|pack)\.?\s*/\s*"
+    r"(\d+(?:\.\d+)?)\s*(fl\.?\s*oz|oz|lbs?|ct|count|pk|gal|qt|ml|liters?|litres?|l)\b(?!\s*-)"
+)
+
+
+def parse_size(product_name):
+    """Size string for a packaged BJs product, from its name. 'N/A' when none.
+
+    Separate function so it is testable against real names (#73); the output
+    feeds units.calculate_rate_per_unit / parse_unit_price unchanged.
+    """
+    name = product_name.lower().replace(',', '')
+    pack = _PACK_SIZE_RE.search(name)
+    if pack:
+        count, each, unit = float(pack.group(1)), float(pack.group(2)), pack.group(3)
+        if unit.startswith("fl"):
+            unit = "fl oz"
+        elif unit == "lbs":
+            unit = "lb"
+        elif unit.startswith("lit"):
+            unit = "l"
+        return f"{count * each:g} {unit}"
+    match = _SIZE_RE.search(name)
+    return match.group(1) if match else 'N/A'
 
 ROW_COLUMNS = ["Product", "Price", "Rate", "Size"]
 
@@ -164,18 +218,7 @@ def parse_product(product, store):
                 return None, NO_STORE_PRICE
             product_price = prices[store]['value']
             product_price = float(product_price.strip().removeprefix("$"))
-            name_for_size = product_name.lower().replace(',', '')
-            match = _SIZE_RE.search(name_for_size)
-            if match:
-                calcmatch = _SIZE_RATIO_RE.search(name_for_size)
-                if calcmatch:
-                    total_qty = float(calcmatch.group(1).replace(',', ''))
-                    total_qty *= float(calcmatch.group(3).replace(',', ''))
-                    product_size = f"{total_qty} {calcmatch.group(4)}"
-                else:
-                    product_size = match.group(1)
-            else:
-                product_size = 'N/A'
+            product_size = parse_size(product_name)
 
         row = {
             "Product": product_name,
