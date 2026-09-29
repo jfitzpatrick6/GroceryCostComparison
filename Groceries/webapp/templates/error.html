@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} - {{ title }} - Grocery Cost Comparison{% endblock %}
+{% block content %}
+<div class="card">
+    <div class="empty">
+        <div class="empty__glyph" aria-hidden="true">{% if code >= 500 %}&#9888;{% else %}&#128269;{% endif %}</div>
+        <div class="empty__title">{{ code }} &mdash; {{ title }}</div>
+        {% if detail %}<p>{{ detail }}</p>{% endif %}
+        {# A way out matters more than an apology: the failure state that used to
+           exist was a bare Werkzeug page with nothing clickable, so the only
+           recovery was remembering the URL. Every error page offers the two
+           places someone is most likely to have been trying to reach. #}
+        <div class="row row--center">
+            <a class="btn btn--primary" href="/">Home</a>
+            <a class="btn" href="/list">Grocery list</a>
+            <a class="btn" href="javascript:history.back()">Go back</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

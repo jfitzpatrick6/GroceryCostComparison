@@ -7,6 +7,7 @@ import psycopg2
 import psycopg2.extras
 import requests
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from werkzeug.exceptions import HTTPException
 
 import matching
 
@@ -262,17 +263,113 @@ def active_profile():
 def inject_profile_switcher():
     """Makes the active profile + full profile list available in every
     template's nav, without every single route having to fetch and pass
-    it through explicitly."""
-    conn = get_connection()
+    it through explicitly.
+
+    Degrades to an empty profile list if the database is unreachable, and that
+    is load-bearing rather than defensive: this runs on EVERY template render,
+    including the error pages added for #68. If it raised, a database outage
+    would make the 500 handler fail too, and the household would get a bare
+    Werkzeug traceback instead of an explanation - the exact failure #68 exists
+    to remove. The nav simply shows "nobody" until the database is back.
+
+    Note this still runs DDL per render (ensure_profiles_table), which #66
+    removes. Making it fault-tolerant here does not make that cost go away.
+    """
+    names = []
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            ensure_profiles_table(cur)
-            conn.commit()
-            cur.execute("SELECT name FROM profiles ORDER BY name")
-            names = [row["name"] for row in cur.fetchall()]
-    finally:
-        conn.close()
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                ensure_profiles_table(cur)
+                conn.commit()
+                cur.execute("SELECT name FROM profiles ORDER BY name")
+                names = [row["name"] for row in cur.fetchall()]
+        finally:
+            conn.close()
+    except psycopg2.Error:
+        # Logged at warning, not error: the route that triggered the render will
+        # fail loudly on its own query and produce the real 500. Logging this at
+        # error level would double-report every outage.
+        app.logger.warning("profile list unavailable; rendering nav without it", exc_info=True)
     return {"active_profile_name": active_profile(), "all_profile_names": names}
+
+
+# --- Error pages (#68) -----------------------------------------------------
+#
+# Before this, any unhandled exception produced Werkzeug's bare 500 page with no
+# explanation and no way back, and nothing was logged beyond the access line - so
+# a household member saying "the page broke" was undiagnosable. The most likely
+# trigger is not exotic: the db container restarting, which is a normal event, and
+# which compose's `depends_on` does not fully protect against (#71 helps but the
+# webapp can still be up while Postgres is not accepting connections).
+#
+# One handler for Exception that dispatches on HTTPException, rather than five
+# separate @errorhandler decorators. A single funnel is what guarantees nothing
+# escapes unrendered; a decorator per code leaves every code nobody thought to
+# list falling through to Werkzeug's default.
+
+# Status codes worth a specific explanation rather than a generic one. Anything
+# not listed still gets a page, just with the server's own reason phrase.
+_ERROR_COPY = {
+    400: ("That request didn't make sense",
+          "A form field was missing or malformed. Go back and try again - if a "
+          "button on the page produced this, it's a bug worth reporting."),
+    403: ("Not allowed",
+          "This app has no authentication of its own; the tailnet is the "
+          "boundary (#35). If you reached this from a link, something is "
+          "misconfigured rather than forbidden."),
+    404: ("No such page",
+          "That recipe, item or page doesn't exist - it may have been deleted, "
+          "or the link may be old."),
+    500: ("Something went wrong on our side",
+          "The details are in the server log. If the database was restarting, "
+          "waiting a few seconds and reloading usually fixes it."),
+    503: ("The database isn't reachable",
+          "The app is up but Postgres is not answering. Check "
+          "`docker compose ps` and `docker compose logs db`."),
+}
+
+
+@app.errorhandler(Exception)
+def handle_error(err):
+    """Render every failure as a real page, and log every unexpected one.
+
+    Two deliberate details:
+
+    - HTTPExceptions are passed through with their own status, so a legitimate
+      404 stays a 404 rather than becoming a 500. Only genuinely unexpected
+      exceptions are logged with a traceback; logging every 404 would bury the
+      ones that matter.
+    - Rendering is wrapped, because the error page is itself a template and the
+      context processor above talks to the database. If rendering fails - the
+      template is missing, or something else is broken - fall back to a plain
+      string so there is ALWAYS an explanation rather than a bare traceback.
+    """
+    if isinstance(err, HTTPException):
+        code = err.code or 500
+        name, detail = _ERROR_COPY.get(code, (err.name, err.description or ""))
+    else:
+        # OperationalError is psycopg2's "could not connect / connection lost".
+        # Without this the 503 copy above was unreachable: a db restart - the
+        # most likely failure, per the note above - got the generic 500 text
+        # instead of the one that says what to check.
+        code = 503 if isinstance(err, psycopg2.OperationalError) else 500
+        name, detail = _ERROR_COPY[code]
+        app.logger.exception(
+            "Unhandled %s on %s %s", type(err).__name__, request.method, request.path
+        )
+
+    try:
+        return render_template("error.html", code=code, title=name, detail=detail), code
+    except Exception:
+        app.logger.exception("rendering the error page itself failed")
+        body = (
+            f"<!doctype html><meta charset=utf-8><title>{code} {name}</title>"
+            f"<body style=font-family:sans-serif;padding:2rem>"
+            f"<h1>{code} &mdash; {name}</h1><p>{detail}</p>"
+            f"<p><a href=/>Back to the app</a></p>"
+        )
+        return body, code
 
 
 @app.route("/profiles")
@@ -301,25 +398,43 @@ def add_profile():
             conn.commit()
         finally:
             conn.close()
+        flash(f"{name} added.", "success")
+    else:
+        # Was a silent no-op. The form's `required` stops this in a browser, but
+        # a blank POST otherwise reloaded the page and said nothing - which reads
+        # as "the button is broken".
+        flash("Enter a name to add a profile.", "error")
     return redirect(url_for("profiles"))
 
 
 @app.route("/profiles/remove", methods=["POST"])
 def remove_profile():
     profile_id = request.form["id"]
+    removed = None
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Look the name up before deleting so the confirmation says WHO was
+            # removed. Destructive and unrecoverable, so "removed" alone is not
+            # enough to notice a mis-click in time.
+            cur.execute("SELECT name FROM profiles WHERE id = %s", (profile_id,))
+            row = cur.fetchone()
+            removed = row[0] if row else None
             cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
         conn.commit()
     finally:
         conn.close()
+    flash(f"Removed {removed}. Items they added keep their name." if removed
+          else "That profile was already gone.", "success")
     return redirect(url_for("profiles"))
 
 
 @app.route("/profiles/switch", methods=["POST"])
 def switch_profile():
     session["profile_name"] = request.form.get("name") or None
+    who = session["profile_name"]
+    flash(f"Now shopping as {who}." if who
+          else "Profile cleared - edits won't be attributed to anyone.", "success")
     return redirect(request.referrer or url_for("profiles"))
 
 
@@ -415,6 +530,7 @@ def pin_staple():
         conn.commit()
     finally:
         conn.close()
+    flash(f"Pinned {product} at {store} to staples.", "success")
     return redirect(request.referrer or url_for("prices"))
 
 
@@ -429,6 +545,7 @@ def unpin_staple():
         conn.commit()
     finally:
         conn.close()
+    flash(f"Unpinned {product} at {store}.", "success")
     return redirect(url_for("staples"))
 
 
@@ -538,6 +655,9 @@ def add_list_item():
             conn.commit()
         finally:
             conn.close()
+        flash(f"Added {name}{f' ({qty})' if qty else ''} to your list.", "success")
+    else:
+        flash("Enter an item name to add it.", "error")
     return redirect(url_for("grocery_list"))
 
 
@@ -662,28 +782,47 @@ def check_list_item():
             # (see #30) - undo doesn't reverse the restock, matching that
             # manual pantry corrections are always available rather than
             # trying to make this perfectly symmetric.
+            # Hoisted above the UPDATE (it used to run only when checking off) so
+            # both directions can name the item. Reading name/qty before or after
+            # the UPDATE is equivalent - the UPDATE touches checked/checked_at/
+            # checked_by only.
+            cur.execute("SELECT name, qty FROM grocery_list_items WHERE id = %s", (item_id,))
+            item = cur.fetchone()
             if checked:
                 ensure_pantry_table(cur)
-                cur.execute("SELECT name, qty FROM grocery_list_items WHERE id = %s", (item_id,))
-                item = cur.fetchone()
                 if item:
                     restock_pantry(cur, item[0], item[1], updated_by=active_profile())
         conn.commit()
     finally:
         conn.close()
+    label = item[0] if item else "that item"
+    if checked:
+        # Say the pantry moved too, because it does and it is not visible from the
+        # list page - a silent side effect is how the pantry ends up distrusted.
+        flash(f"Checked off {label} - pantry restocked if it matched.", "success")
+    else:
+        flash(f"Put {label} back on the list. The pantry restock was not undone.", "warning")
     return redirect(url_for("grocery_list"))
 
 
 @app.route("/list/remove", methods=["POST"])
 def remove_list_item():
     item_id = request.form["id"]
+    removed = None
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Name it before deleting: this is one tap on a phone in a store, and
+            # "removed" without saying what is no confirmation at all.
+            cur.execute("SELECT name FROM grocery_list_items WHERE id = %s", (item_id,))
+            row = cur.fetchone()
+            removed = row[0] if row else None
             cur.execute("DELETE FROM grocery_list_items WHERE id = %s", (item_id,))
         conn.commit()
     finally:
         conn.close()
+    flash(f"Removed {removed} from the list." if removed else "That item was already gone.",
+          "success")
     return redirect(url_for("grocery_list"))
 
 
@@ -764,6 +903,11 @@ def set_pantry_threshold():
         conn.commit()
     finally:
         conn.close()
+    # This fires from an inline onchange, so the message has to be short enough
+    # not to feel like noise on every edit - but it must exist, because otherwise
+    # an auto-submitting field gives no evidence it saved.
+    flash(f"Low-stock level set to {threshold}." if threshold
+          else "Low-stock alert turned off.", "success")
     return redirect(url_for("pantry"))
 
 
@@ -793,19 +937,35 @@ def set_pantry_item():
             conn.commit()
         finally:
             conn.close()
+        # "set", not "added" - this route replaces the amount rather than
+        # incrementing it, and saying "added 2 cups" when the pantry now holds
+        # exactly 2 cups would be a lie about the semantics.
+        qty = " ".join(str(x) for x in (amount, unit) if x) or "no amount"
+        flash(f"Pantry: {name} set to {qty}.", "success")
+    else:
+        flash("Enter an item name to save it to the pantry.", "error")
     return redirect(url_for("pantry"))
 
 
 @app.route("/pantry/remove", methods=["POST"])
 def remove_pantry_item():
     item_id = request.form["id"]
+    removed = None
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Name it before deleting. Pantry amounts are not re-derivable - there
+            # is no scrape that puts "2.5 cups of cumin" back - so a mis-tap here
+            # costs real data and the confirmation has to say what went.
+            cur.execute("SELECT name FROM pantry_items WHERE id = %s", (item_id,))
+            row = cur.fetchone()
+            removed = row[0] if row else None
             cur.execute("DELETE FROM pantry_items WHERE id = %s", (item_id,))
         conn.commit()
     finally:
         conn.close()
+    flash(f"Removed {removed} from the pantry." if removed
+          else "That pantry item was already gone.", "success")
     return redirect(url_for("pantry"))
 
 
@@ -1080,6 +1240,17 @@ def parse_pasted_recipe(text):
 def parse_paste_recipe():
     pasted = request.form.get("pasted", "")
     name, servings, notes, ingredients_text = parse_pasted_recipe(pasted)
+    # Say how much was found, and that nothing is saved yet. #27 deliberately
+    # pre-fills an editable form instead of saving directly, and a silent
+    # transition to a filled-in form does not communicate that distinction.
+    found = len([line for line in ingredients_text.splitlines() if line.strip()])
+    if found:
+        where = f' in "{name}"' if name else ""
+        flash(f"Found {found} ingredient(s){where}. "
+              "Nothing is saved yet - check them over, then save.", "info")
+    else:
+        flash("Couldn't find any ingredients in that text. Check the formatting, "
+              "or fill the form in by hand.", "warning")
     return render_template(
         "recipe_form.html", recipe={"name": name, "servings": servings, "notes": notes},
         ingredients_text=ingredients_text, form_action=url_for("new_recipe"),
@@ -1200,13 +1371,30 @@ def edit_recipe(recipe_id):
 
 @app.route("/recipes/<int:recipe_id>/delete", methods=["POST"])
 def delete_recipe(recipe_id):
+    name = None
+    ingredients = 0
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Say what was destroyed, and how much. recipe_ingredients is
+            # ON DELETE CASCADE, so deleting a recipe silently takes its
+            # ingredients with it - the confirmation is the only place that
+            # cascade is ever visible to the person who clicked.
+            cur.execute(
+                "SELECT r.name, count(i.id) FROM recipes r "
+                "LEFT JOIN recipe_ingredients i ON i.recipe_id = r.id "
+                "WHERE r.id = %s GROUP BY r.name",
+                (recipe_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                name, ingredients = row[0], row[1]
             cur.execute("DELETE FROM recipes WHERE id = %s", (recipe_id,))
         conn.commit()
     finally:
         conn.close()
+    flash(f"Deleted recipe {name} and its {ingredients} ingredient(s)." if name
+          else "That recipe was already gone.", "success")
     return redirect(url_for("recipes"))
 
 
@@ -1463,6 +1651,11 @@ def set_planner_slot():
             conn.commit()
         finally:
             conn.close()
+        flash(f"Planned for {DAY_NAMES[day_of_week]} {meal}.", "success")
+    else:
+        # The picker's placeholder submits an empty recipe_id. Saying "Planned"
+        # there would confirm a save that never happened.
+        flash("Pick a recipe to plan it.", "error")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -1487,6 +1680,7 @@ def remove_planner_recipe():
         conn.commit()
     finally:
         conn.close()
+    flash(f"Removed from {DAY_NAMES[day_of_week]} {meal}.", "success")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -1515,6 +1709,12 @@ def add_planner_extra():
             conn.commit()
         finally:
             conn.close()
+        # Inside the `if`: amount/unit/name only exist when a line was parsed,
+        # so a blank submit used to raise UnboundLocalError here and 500.
+        added = " ".join(str(x) for x in (amount, unit, name) if x)
+        flash(f"Added {added} to {DAY_NAMES[day_of_week]} {meal}.", "success")
+    else:
+        flash("Enter an ingredient line to add it.", "error")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -1532,6 +1732,7 @@ def remove_planner_extra():
         conn.commit()
     finally:
         conn.close()
+    flash("Removed that extra.", "success")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -1560,6 +1761,7 @@ def set_planner_servings():
         conn.commit()
     finally:
         conn.close()
+    flash(f"Servings set to {servings} - ingredients will scale to match.", "success")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -1663,6 +1865,7 @@ def adjust_used():
         conn.commit()
     finally:
         conn.close()
+    flash(f"Updated {ingredient_name} - the pantry was corrected to match.", "success")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -1704,6 +1907,11 @@ def mark_cooked():
         conn.commit()
     finally:
         conn.close()
+    n = len(slots)
+    if cooked:
+        flash(f"Marked {n} recipe(s) cooked and depleted the pantry for them." if n else "Marked cooked.", "success")
+    else:
+        flash("Undid the cooked mark. The pantry was not restocked - correct it by hand if you need to.", "warning")
     return redirect(url_for("planner", week=week_start, meal=meal))
 
 
@@ -2142,6 +2350,10 @@ def readd_recipe():
         conn.commit()
     finally:
         conn.close()
+    if open_day is not None:
+        flash(f"Planned again for {DAY_NAMES[open_day]} (the first free dinner slot).", "success")
+    else:
+        flash("Every dinner slot that week is taken, so nothing was added. Pick a week with a free day.", "warning")
     return redirect(url_for("planner", week=week_start))
 
 
@@ -2200,9 +2412,17 @@ def add_week_to_list():
             combined = get_week_ingredients(cur, week_start)
             apply_pantry(cur, combined)
 
+            # Counted so the confirmation can report what really happened. Three
+            # different things occur in this loop - skipped because the pantry
+            # covers it, merged into an existing unchecked item, or added new -
+            # and a bare "done" hides all three. The skipped count matters most:
+            # it is the only signal that pantry-aware filtering (#30) actually
+            # did something, which otherwise looks like the planner lost items.
+            added = merged = skipped = 0
             for ing in combined:
                 # Fully covered by pantry (#30) - don't add it to the list.
                 if ing["pantry_have"] is not None and ing["need_amount"] == "0":
+                    skipped += 1
                     continue
                 amount, unit = ing["need_amount"], ing["unit"]
 
@@ -2214,12 +2434,23 @@ def add_week_to_list():
                 if existing:
                     merged_qty = merge_qty(existing["qty"], amount, unit)
                     cur.execute("UPDATE grocery_list_items SET qty = %s WHERE id = %s", (merged_qty, existing["id"]))
+                    merged += 1
                 else:
                     qty = " ".join(str(p) for p in (amount, unit) if p) or None
                     cur.execute("INSERT INTO grocery_list_items (name, qty) VALUES (%s, %s)", (ing["name"], qty))
+                    added += 1
         conn.commit()
     finally:
         conn.close()
+    if not combined:
+        flash("No dinners are planned that week, so there was nothing to add.", "warning")
+    else:
+        parts = [f"{added} added"]
+        if merged:
+            parts.append(f"{merged} merged into items already on the list")
+        if skipped:
+            parts.append(f"{skipped} skipped because the pantry covers them")
+        flash("Week's ingredients: " + ", ".join(parts) + ".", "success")
     return redirect(url_for("grocery_list"))
 
 
