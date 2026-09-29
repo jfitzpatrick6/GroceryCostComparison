@@ -71,7 +71,36 @@ import re
 # Each replaces the left-hand phrase with a single canonical phrase - both
 # sides of a match (list item and catalog product) go through the same
 # substitution, so it doesn't matter which phrasing either one used.
+# Lean/fat ratios (#104). "80/20 ground beef" used to lose "80/20" entirely:
+# _PURE_NUMBER drops N/N as a size fraction, so the query became plain "ground
+# beef" and matched any fat level - "93/7 Lean Ground Beef" at Aldi, "73% Lean"
+# at BJs - with nothing flagged. The live catalogue (2026-09-29, 23,089 rows)
+# spells the same ratio as "93/7", "93/07", "80%/20%", "85% Lean/15% Fat",
+# "80% Lean 20% Fat" and plain "80% Lean", so every form is rewritten to the
+# lean percent ("80%"), which is the one piece all of them share.
+#
+# The rule that makes it a ratio and not a size: the two sides sum to 100.
+# Every N/N in that catalogue that is NOT a fat ratio fails it - fractions (1/2,
+# 3/4, 1/8 sheet cake), shrimp counts (16/20, 31/40), "24/7" - and stays a
+# dropped number exactly as before. The only non-meat hit is "Organic Girl
+# 50/50 Essential Salads", which becomes a "50%" token only a "50/50" query
+# can ask for.
+_FAT_RATIO = re.compile(
+    r"(?<![\d./])(\d{1,2})%?(?:\s*lean)?\s*/\s*(\d{1,2})%?(?:\s*fat)?(?![\d/%])"
+)
+
+
+def _fat_ratio_to_lean_percent(match):
+    lean, fat = int(match.group(1)), int(match.group(2))
+    if lean + fat != 100:
+        return match.group(0)
+    # Keep "lean" when the name said it, or "75% Lean/25% Fat Wagyu" would stop
+    # matching a "75% lean ground beef" query that matched it before.
+    return f"{lean}% lean" if "lean" in match.group(0) else f"{lean}%"
+
+
 _PHRASE_SYNONYMS = [
+    (_FAT_RATIO, _fat_ratio_to_lean_percent),
     (re.compile(r"\bconfectioners['’]?\s+sugar\b"), "powdered sugar"),
     (re.compile(r"\bgarbanzo\s+beans?\b"), "chickpeas"),
     (re.compile(r"\bchick\s*peas?\b"), "chickpeas"),
