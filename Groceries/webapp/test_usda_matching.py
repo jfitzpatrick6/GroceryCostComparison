@@ -266,7 +266,8 @@ class MockedUsdaMatchingTests(unittest.TestCase):
         # "whole milk" 245 -> None, "ground cinnamon" 2.6 -> None, "crushed
         # tomatoes" 242 -> None. They stay part of the name.
         for name in ["whole milk", "ground cinnamon", "ground beef", "crushed tomatoes",
-                     "mashed potatoes", "whole wheat flour", "shredded cheddar cheese"]:
+                     "mashed potatoes", "whole wheat flour", "shredded cheddar cheese",
+                     "grated parmesan cheese"]:
             self.assertEqual(app._split_form_words(name), (name, set()), name)
 
     def test_butter_resolves_to_plain_butter_not_ghee(self):

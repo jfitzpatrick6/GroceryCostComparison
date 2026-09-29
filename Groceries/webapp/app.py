@@ -2558,13 +2558,14 @@ def ensure_ingredient_conversions_table(cur):
 # Only words that describe a PREPARATION and are never part of a food's name.
 # Deliberately excluded, though FDC uses them as portion modifiers: "ground"
 # ("ground beef" is Beef, ground), "whole" ("whole milk"), "crushed" ("crushed
-# tomatoes"), "mashed", "shredded" - stripping those changed the food searched
-# for. The trade-off was measured the other way too: searching the full name
+# tomatoes"), "mashed", "shredded", "grated" ("Cheese, parmesan, grated" - a
+# grated-parmesan search stripped to "parmesan cheese" lost its 100 g/cup) -
+# stripping those changed the food searched for. The trade-off was measured the other way too: searching the full name
 # first instead made "chopped onion" resolve to a processed-onion entry at 210
 # g/cup rather than "Onions, raw" at 160. Cost of the exclusion: pepper by the
 # tsp ("tsp, ground" 2.3 vs "tsp, whole" 2.9) has no estimate.
 _FORM_WORDS = (
-    "chopped", "sliced", "diced", "minced", "grated", "packed", "unpacked",
+    "chopped", "sliced", "diced", "minced", "packed", "unpacked",
     "sifted", "unsifted", "melted", "cubed", "halved",
 )
 _FORM_WORD_RE = re.compile(r"\b(" + "|".join(_FORM_WORDS) + r")\b", re.IGNORECASE)
@@ -2619,16 +2620,11 @@ def _usda_grams_per_unit(name, measure_words):
     # food's identity, so they are removed before searching. See _FORM_WORDS for
     # why words like "ground" and "whole" are deliberately not treated as forms.
     base_name, forms = _split_form_words(name)
-    result = _usda_resolve(base_name, measure_words, forms, api_key)
-    return None if result is _NO_IDENTITY else result
-
-
-_NO_IDENTITY = object()  # sentinel: the search found no food at all
+    return _usda_resolve(base_name, measure_words, forms, api_key)
 
 
 def _usda_resolve(query, measure_words, forms, api_key):
-    """One FDC search + portion choice for `query`. Returns grams per unit, None
-    (a food was found but no confident portion), or _NO_IDENTITY."""
+    """One FDC search + portion choice for `query`: grams per unit, or None."""
     try:
         # #54: search the alias's biased phrase for known-ambiguous names
         # (see _USDA_SEARCH_ALIASES above), the raw name otherwise.
@@ -2666,7 +2662,7 @@ def _usda_resolve(query, measure_words, forms, api_key):
 
         foods = [f for f in foods if _word_hits(f.get("description", ""))]
         if not foods:
-            return _NO_IDENTITY
+            return None
 
         # #54: prefer a description that *starts with* one of the query
         # words over one where the word merely appears somewhere in it.
