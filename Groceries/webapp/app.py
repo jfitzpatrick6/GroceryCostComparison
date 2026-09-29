@@ -1,7 +1,10 @@
 import datetime
 import math
 import os
+import queue
 import re
+import threading
+import time
 
 import psycopg2
 import psycopg2.extras
@@ -2248,11 +2251,104 @@ def _usda_grams_per_unit(name, measure_words):
     return None
 
 
+# --- USDA lookups off the request path (#64) ---------------------------------
+#
+# /planner/ingredients used to call USDA synchronously for every uncached
+# ingredient: up to 6 HTTPS requests x 5s timeout each, inside an open
+# transaction that only committed at the end. A new week could take minutes to
+# load, and if the request died partway every resolution it had paid for was
+# rolled back, so the next attempt started cold again - indefinitely.
+#
+# Now the request path only reads the ingredient_conversions cache. A miss is
+# queued for ONE background thread per worker process, which resolves it on its
+# own connection and commits per ingredient, so progress is banked as it
+# happens. The page shows "estimating" for queued items and refreshes itself
+# until none are left.
+#
+# Why a thread and not the scheduler (#64's first suggestion): the scraper image
+# does not contain the webapp's code, and a thread needs no new service. Why
+# ONE thread: USDA rate-limits per key, and serialising keeps a new week with
+# 25 misses from firing 150 requests at once.
+#
+# Failures are remembered in memory for _USDA_MISS_TTL rather than in the
+# table. _usda_grams_per_unit returns None for "no key", "no network" and "FDC
+# has no usable portion" alike, and only the last is permanent - persisting it
+# would turn a brief outage into a permanently missing estimate. Forgetting it
+# after an hour costs at most one background retry per ingredient per hour.
+_USDA_MISS_TTL = 3600
+_usda_queue = queue.Queue()
+_usda_lock = threading.Lock()
+_usda_pending = set()      # (lower name, unit) queued or in flight
+_usda_misses = {}          # (lower name, unit) -> monotonic time it failed
+_usda_worker = None
+
+
+def _usda_resolve_in_background(name, unit, measure_words):
+    """Worker body for one queued lookup. Never raises - an exception here would
+    kill the only worker thread and leave every later miss pending forever."""
+    key = (name.lower(), unit)
+    grams = None
+    try:
+        grams = _usda_grams_per_unit(name, measure_words)
+        if grams is not None:
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO ingredient_conversions (name, unit, grams_per_unit) VALUES (%s, %s, %s) "
+                        "ON CONFLICT (name, unit) DO UPDATE SET grams_per_unit = EXCLUDED.grams_per_unit, "
+                        "updated_at = now()",
+                        (name, unit, grams),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception:
+        app.logger.exception("background USDA lookup failed for %r (%s)", name, unit)
+        grams = None
+    with _usda_lock:
+        _usda_pending.discard(key)
+        if grams is None:
+            _usda_misses[key] = time.monotonic()
+
+
+def _usda_worker_loop():
+    while True:
+        _usda_resolve_in_background(*_usda_queue.get())
+
+
+def _queue_usda_lookup(name, unit, measure_words):
+    """Queue a background lookup unless one is already pending or recently
+    failed. Returns "pending" or "miss" for the page to show."""
+    global _usda_worker
+    key = (name.lower(), unit)
+    with _usda_lock:
+        if key in _usda_pending:
+            return "pending"
+        failed_at = _usda_misses.get(key)
+        if failed_at is not None and time.monotonic() - failed_at < _USDA_MISS_TTL:
+            return "miss"
+        # Missing key: nothing to wait for, and queueing would show
+        # "estimating" for something that can never resolve.
+        if not os.getenv("USDA_API_KEY"):
+            return "miss"
+        _usda_pending.add(key)
+        # Started lazily, in the process that serves requests: gunicorn forks
+        # workers after importing the app, and a thread started at import time
+        # would exist only in the master, which never serves anything.
+        if _usda_worker is None or not _usda_worker.is_alive():
+            _usda_worker = threading.Thread(target=_usda_worker_loop, name="usda-lookups", daemon=True)
+            _usda_worker.start()
+    _usda_queue.put((name, unit, measure_words))
+    return "pending"
+
+
 def resolve_purchase_amount(cur, name, amount_str, unit):
     """Best-effort (amount, unit) in purchase terms (lb or gal) for one
     ingredient line (#36) - e.g. "2 cups flour" -> "~0.55 lb". Returns None
     when it can't resolve confidently, which is the common case for v1's
-    intentionally narrow unit coverage."""
+    intentionally narrow unit coverage, or "pending" when a USDA lookup has been
+    queued and the answer isn't known yet (#64). Never calls USDA itself."""
     try:
         amount = float(amount_str)
     except (TypeError, ValueError):
@@ -2276,18 +2372,9 @@ def resolve_purchase_amount(cur, name, amount_str, unit):
         (name, unit),
     )
     row = cur.fetchone()
-    if row:
-        grams_per_unit = float(row["grams_per_unit"] if isinstance(row, dict) else row[0])
-    else:
-        grams_per_unit = _usda_grams_per_unit(name, measure_words)
-        if grams_per_unit is None:
-            return None
-        cur.execute(
-            "INSERT INTO ingredient_conversions (name, unit, grams_per_unit) VALUES (%s, %s, %s) "
-            "ON CONFLICT (name, unit) DO UPDATE SET grams_per_unit = EXCLUDED.grams_per_unit, updated_at = now()",
-            (name, unit, grams_per_unit),
-        )
-
+    if not row:
+        return "pending" if _queue_usda_lookup(name, unit, measure_words) == "pending" else None
+    grams_per_unit = float(row["grams_per_unit"] if isinstance(row, dict) else row[0])
     return round(amount * grams_per_unit / _GRAMS_PER_LB, 2), "lb"
 
 
@@ -2295,11 +2382,16 @@ def apply_purchase_estimates(cur, combined):
     """Annotates each combined ingredient with a best-effort purchase-unit
     estimate (#36), for display only - doesn't change what gets added to
     the grocery list (#38's job, package-size fitting, is the next step
-    once this exists)."""
+    once this exists). Returns how many are still being looked up (#64)."""
+    pending = 0
     for ing in combined:
         resolved = resolve_purchase_amount(cur, ing["name"], ing["amount"], ing["unit"])
-        ing["purchase_amount"], ing["purchase_unit"] = resolved if resolved else (None, None)
-    return combined
+        ing["purchase_pending"] = resolved == "pending"
+        pending += ing["purchase_pending"]
+        ing["purchase_amount"], ing["purchase_unit"] = (
+            resolved if resolved and resolved != "pending" else (None, None)
+        )
+    return pending
 
 
 @app.route("/history")
@@ -2367,11 +2459,12 @@ def planner_ingredients():
             conn.commit()
             combined = get_week_ingredients(cur, week_start)
             apply_pantry(cur, combined)
-            apply_purchase_estimates(cur, combined)
+            pending = apply_purchase_estimates(cur, combined)
             conn.commit()
     finally:
         conn.close()
-    return render_template("planner_ingredients.html", week_start=week_start, combined=combined)
+    return render_template("planner_ingredients.html", week_start=week_start, combined=combined,
+                           pending=pending)
 
 
 _QTY_LINE = re.compile(r"^\s*([\d.]+)\s*(\S*)\s*$")

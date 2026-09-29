@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Ingredients needed - Grocery Cost Comparison{% endblock %}
+{# Refresh only while USDA lookups are still running in the background (#64).
+   Every queued item ends as a cached estimate or a remembered miss, so this
+   stops on its own. #}
+{% block head %}{% if pending %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
 {% block content %}
 <a class="backlink" href="/planner?week={{ week_start }}">&laquo; Back to planner</a>
 <div class="page-head">
@@ -13,6 +17,15 @@
     deliberate &mdash; no estimate beats a guessed one.
 </p>
 
+{% if pending %}
+<div class="alert alert--info" role="status">
+    <span class="alert__icon" aria-hidden="true">&#8505;</span>
+    <div class="alert__body">Looking up {{ pending }} purchase estimate(s) from USDA in the
+    background. This page refreshes itself until they're in &mdash; everything else is
+    already final.</div>
+</div>
+{% endif %}
+
 {% if combined %}
 <div class="card">
     <ul class="ingredient-list">
@@ -21,6 +34,8 @@
             {% if item.amount %}<span class="qty">{{ item.amount }}</span> {% endif %}{% if item.unit %}<span class="unit">{{ item.unit }}</span> {% endif %}<span class="item-name">{{ item.name }}</span>
             {% if item.purchase_amount is not none %}
                 <span class="muted small">(~{{ item.purchase_amount }} {{ item.purchase_unit }} to buy)</span>
+            {% elif item.purchase_pending %}
+                <span class="muted small">(estimating&hellip;)</span>
             {% endif %}
             {% if item.pantry_have is not none %}
                 <span class="badge badge--muted">have {{ item.pantry_have }} {{ item.unit }}</span>
