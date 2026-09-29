@@ -234,6 +234,26 @@ def search_terms_for(item_name):
 # excluded.
 MIN_SCORE = 0.2
 
+# Below this, a match is shown to the user with a visible "not sure" marker
+# rather than presented as an answer (#97). MIN_SCORE decides what is allowed
+# to match at all; this decides what the UI may present *confidently*. They are
+# different questions, and conflating them is how a 0.25 match came to look
+# identical to a 0.8 one.
+#
+# 0.45 is derived from measured scores on the live 21,574-row catalog, not from
+# theory. Generic one-word queries that resolved to the wrong food scored
+# 0.25-0.333 ("bacon" -> "TOPS Bacon Chips" and "Breakfast Pizza With Bacon",
+# "eggs" -> "Aldi Potato Salad with Egg", "milk" -> "Goya Coconut Milk" tied with
+# real milk). Queries that resolved correctly scored 0.5-0.8 ("chicken breasts"
+# 0.667, "boneless skinless chicken breast" 0.800). 0.45 sits in the observed gap
+# between the two populations.
+#
+# It is a presentation threshold, deliberately not a filter: raising MIN_SCORE to
+# 0.45 instead would turn these into "no match", which is more honest but less
+# useful than showing the candidate and saying the app isn't sure. See #99 for
+# the scoring itself and #98 for letting the user pick from candidates.
+LOW_CONFIDENCE_SCORE = 0.45
+
 # For a handful of common single-word queries, a specific extra token on
 # the product side means "this is a different food that happens to share
 # the word", not "this is the same food, different brand" - token-subset

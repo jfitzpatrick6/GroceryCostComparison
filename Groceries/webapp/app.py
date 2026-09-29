@@ -452,7 +452,13 @@ def grocery_list():
                 running_low.append(row)
     finally:
         conn.close()
-    return render_template("list.html", items=items, running_low=running_low)
+    return render_template(
+        "list.html", items=items, running_low=running_low,
+        # Presentation threshold, not a filter: below it the match is still shown,
+        # just flagged as uncertain (#97). Kept in matching.py beside MIN_SCORE
+        # because both are claims about what a score means.
+        low_confidence=matching.LOW_CONFIDENCE_SCORE,
+    )
 
 
 @app.route("/list/add", methods=["POST"])
@@ -765,6 +771,7 @@ def where_to_buy():
     return render_template(
         "where_to_buy.html", per_item=per_item, unmatched=unmatched,
         split_total=split_total, store_totals=store_totals, freshness=freshness,
+        low_confidence=matching.LOW_CONFIDENCE_SCORE,
     )
 
 
