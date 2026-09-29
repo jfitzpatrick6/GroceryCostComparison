@@ -23,6 +23,10 @@ EXPECTED_FAILURES = {"Walmart"}
 # run has had a chance to finish - two hours is the slack for one full scrape.
 STALE_AFTER = timedelta(hours=26)
 
+# Outcome marker for a store not attempted this run (collector passes it as the
+# error). Distinct from a failure: nothing was tried, so nothing failed (#132).
+SKIPPED = "skipped"
+
 
 def run_summary(outcomes):
     """One log line for a whole run, and its verdict.
@@ -38,6 +42,15 @@ def run_summary(outcomes):
     unexpected_failures = 0
     succeeded = 0
     for store, count, error in outcomes:
+        if error is SKIPPED:
+            parts.append(f"{store} skipped")
+            continue
+        # Zero items with no exception is a failure, not success (#132): a real
+        # run printed "Walmart ok (0 items)" under an OK verdict after 28
+        # minutes of producing nothing, and a Tops or BJs that silently came
+        # back empty would have been reported the same way.
+        if error is None and not count:
+            error = "returned 0 items"
         if error is None:
             succeeded += 1
             parts.append(f"{store} ok ({count} items)")
