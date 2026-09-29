@@ -37,5 +37,10 @@ RUN chmod 0644 /app/scraper-cron && cp /app/scraper-cron /etc/cron.d/scraper-cro
 # `.env.runtime` quoting fragility that scheduler_entrypoint.sh's own comment
 # flags. Left as a separate change with its own verification.
 
+# Unbuffered, so scrape progress and the final "Run summary" line reach
+# `docker logs` as they happen - buffered output arrives in delayed chunks and
+# is lost outright if a stop has to SIGKILL the process (#63).
+ENV PYTHONUNBUFFERED=1
+
 # Run the script
 CMD ["python", "collector.py"]

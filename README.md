@@ -48,8 +48,8 @@ docker compose up -d --build
 
 That one command is the normal way to run the app. It starts `db`, `webapp`, `db_backup` and `scraper_scheduler`, and prices then stay fresh on their own:
 
-- `scraper_scheduler` scrapes every store daily at **03:00** (edit `Groceries/scraper-cron` and rebuild to change that).
-- At startup it also runs a **catch-up scrape if the newest prices are more than 26 hours old**, so a fresh deploy, or a host that was off at 03:00, doesn't sit on stale or empty prices until the next night (#63). The catch-up and the nightly run share a lock, so they never overlap.
+- `scraper_scheduler` scrapes every store daily at **03:00 UTC** (edit `Groceries/scraper-cron` and rebuild to change that).
+- At startup it also runs a **catch-up scrape if the newest prices are more than 26 hours old**, so a fresh deploy, or a host that was off at 03:00, doesn't sit on stale or empty prices until the next night (#63). The catch-up and the nightly run share a lock, so they never overlap. A manual `grocery_scraper` run is a separate container and does *not* take that lock - don't start one while the scheduler is mid-scrape.
 
 It does **not** start the one-shot `grocery_scraper` - that sits behind the `manual` profile, because a full scrape takes about 20 minutes (Tops alone walks ~170 category pages) and shouldn't fire on every `up` or reboot.
 

@@ -92,7 +92,7 @@ This starts `db`, `webapp`, `db_backup` and `scraper_scheduler`. The one-shot
 `grocery_scraper` is behind the `manual` profile and is **not** started (#63).
 
 On a first deploy the database has no prices, so `scraper_scheduler` runs a
-**catch-up scrape immediately** rather than waiting for 03:00 - expect about 20
+**catch-up scrape immediately** rather than waiting for 03:00 UTC - expect about 20
 minutes before `/prices` fills in (Tops walks ~170 category pages through a
 headless browser). It does the same after any outage that left prices more than
 26 hours old.
@@ -270,7 +270,7 @@ out-of-scope note.
 
 ## 6. Prices
 
-`scraper_scheduler` runs cron in the foreground and scrapes daily at 03:00.
+`scraper_scheduler` runs cron in the foreground and scrapes daily at 03:00 UTC.
 Walmart does not work (#12 — bot-verification wall, deliberately not
 circumvented), so expect three of four stores and a failure line for Walmart in
 every run. That is not a broken deployment.
