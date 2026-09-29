@@ -64,7 +64,7 @@
                     <td class="faint small">{{ item.updated_by or "?" }}</td>
                     <td class="num">
                         <form method="post" action="/pantry/remove"
-                              onsubmit="return confirm('Remove {{ item.name }} from the pantry?');">
+                              onsubmit='return confirm({{ ("Remove " ~ item.name ~ " from the pantry?")|tojson }});'>
                             <input type="hidden" name="id" value="{{ item.id }}">
                             <button type="submit" class="btn btn--sm btn--quiet">Remove</button>
                         </form>

@@ -36,7 +36,7 @@
                     </td>
                     <td class="num">
                         <form method="post" action="/profiles/remove"
-                              onsubmit="return confirm('Remove {{ row.name }}? Items they already added keep their name.');">
+                              onsubmit='return confirm({{ ("Remove " ~ row.name ~ "? Items they already added keep their name.")|tojson }});'>
                             <input type="hidden" name="id" value="{{ row.id }}">
                             <button type="submit" class="btn btn--sm btn--quiet">Remove</button>
                         </form>

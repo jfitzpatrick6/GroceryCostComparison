@@ -33,7 +33,7 @@
                 <td class="faint small nowrap">{{ row.datetime.strftime("%d %b %H:%M") if row.datetime else "" }}</td>
                 <td class="num">
                     <form method="post" action="/staples/unpin"
-                          onsubmit="return confirm('Unpin {{ row.product }} at {{ row.store }}?');">
+                          onsubmit='return confirm({{ ("Unpin " ~ row.product ~ " at " ~ row.store ~ "?")|tojson }});'>
                         <input type="hidden" name="product" value="{{ row.product }}">
                         <input type="hidden" name="store" value="{{ row.store }}">
                         <button type="submit" class="btn btn--sm btn--quiet">Unpin</button>

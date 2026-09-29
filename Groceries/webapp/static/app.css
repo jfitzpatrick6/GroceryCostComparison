@@ -37,7 +37,7 @@
 
     --text:             #1e1c19;
     --text-muted:       #625d56;
-    --text-faint:       #857f76;
+    --text-faint:       #6f6a61;   /* was #857f76: 3.97:1 on --surface, 3.40:1 on --surface-sunken - fails AA for the 12px text it paints (#101 review) */
     --text-on-primary:  #ffffff;
 
     /* Primary is a deep produce green. Dark enough for white text on it at
@@ -208,8 +208,7 @@ a:hover { color: var(--primary-hover); }
 
 hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
 
-code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
-
+code, 
 /* Visible focus on everything interactive. Keyboard users are a small fraction
    of a household but the cost of omitting this is total exclusion, and a
    :focus-visible ring costs nothing for mouse users. */
@@ -267,11 +266,17 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
 /* Nav scrolls horizontally on a phone instead of wrapping to four lines, and
    the current page is marked by weight + an underline bar rather than only by
    colour, so it survives colour-vision deficiency. */
-.nav { display: flex; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; flex: 1; }
+/* padding + negative margin so the box-shadow focus ring is not clipped by the
+   horizontal scroll container's edge (outline:none means the ring IS the focus
+   indicator, and a clipped focus indicator is no focus indicator). */
+.nav { display: flex; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; flex: 1; padding: 3px; margin: -3px; }
 .nav::-webkit-scrollbar { display: none; }
 .nav a {
     flex: 0 0 auto;
-    padding: var(--space-2) var(--space-3);
+    min-height: var(--tap);
+    display: inline-flex;
+    align-items: center;
+    padding: 0 var(--space-3);
     border-radius: var(--radius-pill);
     color: var(--text-muted);
     text-decoration: none;
@@ -331,7 +336,6 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
 .btn--sm { min-height: 2.25rem; padding: var(--space-1) var(--space-3); font-size: var(--text-xs); }
 .btn--quiet { border-color: transparent; background: transparent; color: var(--text-muted); }
 .btn--quiet:hover { background: var(--surface-sunken); color: var(--text); }
-.btn--block { width: 100%; }
 
 /* --- Forms ----------------------------------------------------------------- */
 .field { display: flex; flex-direction: column; gap: var(--space-1); }
@@ -420,12 +424,10 @@ th.num { text-align: right; }
 /* The unit rate is reference information; the total is the decision. Different
    weights so the eye lands on the right one without reading. */
 .rate { color: var(--text-muted); font-size: var(--text-xs); white-space: nowrap; }
-.total { font-weight: 700; font-size: var(--text-base); color: var(--accent); }
 
 /* A row the app is confident won gets a quiet left bar. Only used for the
    cheapest-per-item answer, so "this is the recommendation" is legible without
    a legend. */
-tr.is-winner > td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
 tr.is-checked { color: var(--text-faint); }
 tr.is-checked .item-name { text-decoration: line-through; }
 
@@ -447,7 +449,6 @@ tr.is-checked .item-name { text-decoration: line-through; }
 .badge--store { background: var(--info-soft); border-color: var(--info-border); color: var(--info); }
 .badge--ok    { background: var(--success-soft); border-color: var(--success-border); color: var(--success); }
 .badge--warn  { background: var(--warning-soft); border-color: var(--warning-border); color: var(--warning); }
-.badge--bad   { background: var(--danger-soft); border-color: var(--danger-border); color: var(--danger); }
 .badge--muted { background: transparent; border-color: var(--border); color: var(--text-faint); }
 
 /* --- Alerts / flash --------------------------------------------------------
@@ -514,7 +515,6 @@ tr.is-checked .item-name { text-decoration: line-through; }
 .faint { color: var(--text-faint); }
 .small { font-size: var(--text-sm); }
 .tiny { font-size: var(--text-xs); }
-.strong { font-weight: 650; }
 .item-name { font-weight: 600; color: var(--text); }
 .nowrap { white-space: nowrap; }
 
@@ -534,6 +534,41 @@ tr.is-checked .item-name { text-decoration: line-through; }
 .totals__value { font-size: var(--text-2xl); font-weight: 700; letter-spacing: -0.02em; margin-top: var(--space-1); }
 .totals__item.is-best .totals__value { color: var(--primary); }
 .totals__note { font-size: var(--text-xs); color: var(--text-muted); margin-top: var(--space-1); }
+
+/* --- Skip link ---------------------------------------------------------------
+   The first focusable element on the page. Invisible until focused, then it
+   appears over the app bar so a keyboard user can get past nine nav links and
+   the profile select to reach the content. */
+.skip-link {
+    position: absolute;
+    left: var(--space-3);
+    top: -3rem;
+    z-index: 40;
+    padding: var(--space-2) var(--space-4);
+    background: var(--primary);
+    color: var(--text-on-primary);
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    font-weight: 600;
+    text-decoration: none;
+    transition: top 0.15s;
+}
+.skip-link:focus { top: 0; }
+
+/* A tick box that exists only on paper. Someone prints the list to take to the
+   store; hiding the check-off forms in print (correct - you can't submit paper)
+   left no way to mark items off, which defeats the point of printing it. */
+.print-box { display: none; }
+@media print {
+    .print-box {
+        display: inline-block;
+        width: 1.1em;
+        height: 1.1em;
+        border: 1.5px solid #000;
+        border-radius: 2px;
+        vertical-align: -0.15em;
+        margin-right: 0.4em;
+    }
+}
 
 /* --- Accessibility helpers -------------------------------------------------- */
 /* Visually hidden but present for screen readers. Used for the "Actions" column
@@ -625,6 +660,7 @@ tr.is-checked .item-name { text-decoration: line-through; }
     margin: var(--space-4) 0 0;
     overflow-x: auto;
     scrollbar-width: none;
+    padding: 3px 3px 0;
 }
 .tabs::-webkit-scrollbar { display: none; }
 .tabs__tab {

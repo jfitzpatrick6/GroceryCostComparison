@@ -72,6 +72,7 @@
                    each row into a card keeps every field visible without
                    scrolling sideways. Desktop ignores the attributes entirely. #}
                 <td data-label="" class="td--check">
+                    <span class="print-box" aria-hidden="true"></span>
                     <form method="post" action="/list/check">
                         <input type="hidden" name="id" value="{{ item.id }}">
                         <input type="hidden" name="checked" value="{{ 0 if item.checked else 1 }}">
@@ -108,7 +109,7 @@
                 </td>
                 <td data-label="" class="num td--remove">
                     <form method="post" action="/list/remove"
-                          onsubmit="return confirm('Remove {{ item.name }} from the list?');">
+                          onsubmit='return confirm({{ ("Remove " ~ item.name ~ " from the list?")|tojson }});'>
                         <input type="hidden" name="id" value="{{ item.id }}">
                         <button type="submit" class="btn btn--sm btn--quiet">Remove</button>
                     </form>

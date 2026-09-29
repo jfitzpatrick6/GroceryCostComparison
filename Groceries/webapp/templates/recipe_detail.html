@@ -37,7 +37,7 @@
            ingredients and there is no undo in the UI. A one-tap destructive
            action on a phone in a store is an accident waiting to happen. #}
         <form method="post" action="/recipes/{{ recipe.id }}/delete"
-              onsubmit="return confirm('Delete {{ recipe.name }} and its {{ ingredients|length }} ingredient(s)? This cannot be undone.');">
+              onsubmit='return confirm({{ ("Delete " ~ recipe.name ~ " and its " ~ (ingredients|length)|string ~ " ingredient(s)? This cannot be undone.")|tojson }});'>
             <button type="submit" class="btn btn--danger">Delete recipe</button>
         </form>
     </div>

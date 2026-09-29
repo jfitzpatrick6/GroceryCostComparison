@@ -18,13 +18,17 @@
 {# Meal tabs. The active one is marked by weight, a filled background and
    aria-current - not by colour alone, and not by a bare <strong> with an
    underline, which read as a heading rather than a selected tab. #}
-<div class="tabs" role="tablist" aria-label="Meal">
+{# Not role="tablist": these links navigate to a different page, they do not
+   switch panels in place, and a tablist without aria-selected/aria-controls/
+   tabpanels and arrow-key handling is worse than no role at all. A nav with
+   aria-current says exactly what this is. #}
+<nav class="tabs" aria-label="Meal">
     {% for m in meals %}
-    <a role="tab" href="/planner?week={{ week_start }}&amp;meal={{ m }}"
+    <a href="/planner?week={{ week_start }}&amp;meal={{ m }}"
        class="tabs__tab{{ ' is-active' if m == meal else '' }}"
-       {% if m == meal %}aria-current="true"{% endif %}>{{ meal_labels[m] }}</a>
+       {% if m == meal %}aria-current="page"{% endif %}>{{ meal_labels[m] }}</a>
     {% endfor %}
-</div>
+</nav>
 
 <div class="table-wrap">
     <table class="planner">
@@ -91,6 +95,16 @@
                     {% endif %}
                     <div class="day-add">
                         <form method="post" action="/planner/set" class="form-row">
+                            {# These three hidden fields are the entire identity of
+                               the slot being edited. The route reads them with
+                               request.form[...] unguarded, so a missing one is a
+                               400 before any database work - which is exactly how
+                               this regression behaved: picking a recipe from the
+                               dropdown did nothing but error. They were dropped in
+                               the restyle and are not decorative. #}
+                            <input type="hidden" name="week_start" value="{{ week_start }}">
+                            <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                            <input type="hidden" name="meal" value="{{ meal }}">
                             <div class="field">
                                 <label class="sr-only" for="rec-{{ day.index }}">Add a recipe to {{ day.name }}</label>
                                 <select id="rec-{{ day.index }}" name="recipe_id" onchange="this.form.submit()">
@@ -103,6 +117,9 @@
                             <noscript><button type="submit" class="btn btn--sm">Add</button></noscript>
                         </form>
                         <form method="post" action="/planner/add_extra" class="form-row">
+                            <input type="hidden" name="week_start" value="{{ week_start }}">
+                            <input type="hidden" name="day_of_week" value="{{ day.index }}">
+                            <input type="hidden" name="meal" value="{{ meal }}">
                             <div class="field">
                                 <label class="sr-only" for="extra-{{ day.index }}">Add an extra ingredient to {{ day.name }}</label>
                                 <input type="text" id="extra-{{ day.index }}" name="line" autocomplete="off"
