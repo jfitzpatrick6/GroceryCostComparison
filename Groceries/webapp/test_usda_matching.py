@@ -493,5 +493,10 @@ class LiveUsdaApiTests(unittest.TestCase):
                             ("brown rice", 185.0), ("spinach", 30.0)]:
             self.assertEqual(app._usda_grams_per_unit(name, ["cup"]), grams, name)
 
+    def test_126_chocolate_is_candy_or_drink_not_frozen_dessert(self):
+        # #126: both used to hit "Milk dessert, frozen" (137) or the candy.
+        self.assertEqual(app._usda_grams_per_unit("milk chocolate", ["cup"]), 168.0)
+        self.assertNotIn(app._usda_grams_per_unit("chocolate milk", ["cup"]), (None, 137.0, 168.0))
+
 if __name__ == "__main__":
     unittest.main()
