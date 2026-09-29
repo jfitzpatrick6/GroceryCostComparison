@@ -79,7 +79,9 @@ app.jinja_env.globals["csrf_token"] = csrf_token
 
 @app.before_request
 def check_csrf():
-    if request.method != "POST":
+    # Unknown URLs skip the check so they 404/405 as usual; "that form had
+    # expired" for a mistyped URL would mislead whoever is debugging it.
+    if request.method != "POST" or request.url_rule is None:
         return
     expected = session.get("_csrf")
     sent = request.form.get("csrf_token", "")
@@ -407,7 +409,9 @@ def handle_error(err):
         # session key may have rotated) or a form from before this check existed.
         code = 400
         name, detail = ("That form had expired",
-                        "Nothing was changed. Reload the page and try again. If this keeps "
+                        "Nothing was changed. If you typed something long (a recipe), press "
+                        "Back and copy it first - then reload the page and submit again. This "
+                        "usually means the app restarted while the page was open. If it keeps "
                         "happening on a page you just loaded, it's a bug worth reporting.")
     elif isinstance(err, HTTPException):
         code = err.code or 500

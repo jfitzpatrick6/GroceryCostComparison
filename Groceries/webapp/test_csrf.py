@@ -37,7 +37,13 @@ class TemplateCoverageTests(unittest.TestCase):
             for body in _POST_FORM.findall(Path(path).read_text()):
                 forms += 1
                 self.assertIn('name="csrf_token" value="{{ csrf_token() }}"', body, path)
-        # 28 at the time of #69; guards against the regex silently matching none.
+        # Counted independently of _POST_FORM, so a form that regex fails to parse
+        # (odd spacing, a ">" inside the tag) shows up as a mismatch, not a pass.
+        independent = sum(
+            len(re.findall(r'method\s*=\s*["\']?post', Path(p).read_text(), re.I))
+            for p in glob.glob(os.path.join(TEMPLATES, "*.html"))
+        )
+        self.assertEqual(forms, independent)
         self.assertGreaterEqual(forms, 28)
 
 
@@ -65,6 +71,9 @@ class EnforcementTests(unittest.TestCase):
             resp = post_with_token(self.client, "/planner/add_extra",
                                    {"week_start": "2026-09-28", "day_of_week": "1", "line": ""})
         self.assertEqual(resp.status_code, 302)
+
+    def test_unknown_url_is_a_404_not_an_expired_form(self):
+        self.assertEqual(self.client.post("/no-such-route").status_code, 404)
 
     def test_get_is_not_checked(self):
         with app.app.test_request_context("/", method="GET"):
