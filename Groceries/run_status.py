@@ -42,7 +42,7 @@ def run_summary(outcomes):
     unexpected_failures = 0
     succeeded = 0
     for store, count, error in outcomes:
-        if error is SKIPPED:
+        if error == SKIPPED:
             parts.append(f"{store} skipped")
             continue
         # Zero items with no exception is a failure, not success (#132): a real

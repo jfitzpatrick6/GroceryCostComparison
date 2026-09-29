@@ -274,7 +274,9 @@ out-of-scope note.
 `scraper_scheduler` runs cron in the foreground and scrapes daily at 03:00 UTC.
 Walmart does not work (#12 — bot-verification wall, deliberately not
 circumvented), so it is skipped unless `SCRAPE_WALMART=1` (#132); every run's
-summary says "Walmart skipped". That is not a broken deployment.
+summary says "Walmart skipped". That is not a broken deployment. **Upgrading
+from before #132:** an existing `.env` with `WALMARTSTORE` set now skips Walmart
+too - add `SCRAPE_WALMART=1` only if you want the 28-minute attempt back.
 
 ```
 docker compose logs --tail 40 scraper_scheduler
