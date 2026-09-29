@@ -90,25 +90,33 @@ unaliased because its FDC entry lacks cup data. Follow this in new code.
 
 ## Known state (verify before relying on this)
 
-Written 2026-09-27. The tracker moves; check the issues.
+Rewritten 2026-09-29 (#128) after the "Family ready" milestone work. The tracker
+moves; check the issues.
 
-- **Walmart scraping does not work** — bot-verification wall, deliberately not
+- **Walmart scraping does not work** - bot-verification wall, deliberately not
   circumvented (#12). Tops/Aldi work via Instacart's white-label platform; BJs
-  works via direct API.
-- Tops/Aldi **cannot be pointed at a chosen store** yet (#43) — they use
-  whatever the host's network location IP-geolocates to.
-- `grocery_prices` is indexed on `(product, store, datetime DESC)` and pruned to
-  a rolling window (#65), so `grocery_prices_latest` no longer full-sorts and
-  spills to disk. But the read is still **O(every retained row)** — the index
-  removed the sort, not the scan — so retention is what actually holds latency
-  down. The durable fix is #57's catalog cache or a view that doesn't walk
-  history.
-- The webapp is served by **gunicorn** behind a Docker `HEALTHCHECK` on
-  `/healthz`, runs as a **non-root** user, and creates its own schema once at
-  startup via `init_schema.py` (#61, #71, #82). It still has **no auth or CSRF
-  protection**, **no error handlers**, **no flash messaging**, and **no
-  backups**.
-- `app.py` (~2,000 lines of routes and domain logic) is **mostly untested**.
-  `test_app_health.py` and `test_app_schema.py` cover the health probe and
-  schema-creation ordering; the routes, planner math, pantry depletion and
-  package-fit costing are not covered (#70).
+  via its search API, with its public key in `.env` as `BJS_CNSTRC_KEY` (#72).
+- Tops/Aldi **cannot be pointed at a chosen store** (#43, deliberately out of
+  the milestone) - they use whatever the host's IP geolocates to. A wrong
+  Instacart `zoneId` returns silently wrong prices, which is why it isn't
+  forced.
+- **Prices stay fresh by default**: `docker compose up -d` starts the scheduler
+  (03:00 UTC nightly, plus a catch-up scrape at start when prices are >26h old);
+  every run ends with `Run summary: OK|PARTIAL|FAILED` (#63). The one-shot
+  scraper is behind `--profile manual`.
+- **Schema**: webapp tables change only through numbered migrations in
+  `Groceries/webapp/migrations.py`, applied at startup (#66); `collector.py`
+  owns `grocery_prices` and runs DDL only when its schema check says so.
+  `test_migrations.py` fails the build on request-path DDL.
+- **Performance**: pooled connections (#67); the normalized price catalogue is
+  cached per worker until a scrape or prune changes it (#57); USDA lookups run
+  in a background thread, never on a request (#64). The catalogue read itself is
+  still O(retained rows), paid once per scrape.
+- **Webapp safety**: every POST carries a CSRF token (#69); no passwords by
+  design (#35) - the port is published on all interfaces on purpose so phones
+  on the home Wi-Fi work. `SECRET_KEY` is optional (a random one is generated
+  per container start if unset). Error pages and flash messages (#68). Nightly
+  `pg_dump` backups to `backups/` (#60).
+- **Tests**: pure helpers and the money/pantry routes are covered (#70); USDA
+  matching has a live tier that runs when `USDA_API_KEY` is set. Matching still
+  ranks by product name only - store departments (#114) are the next step.
