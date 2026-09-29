@@ -58,6 +58,9 @@ class FatRatioTests(unittest.TestCase):
             "TOPS 80%/20% Ground Beef Burgers",
         })
 
+    def test_hyphenated_query_is_the_same_ratio(self):
+        self.assertEqual(self._products("80-20 ground beef"), self._products("80/20 ground beef"))
+
     def test_leading_zero_and_bare_ratio_forms(self):
         self.assertEqual(self._products("93/7 ground beef"), {
             "93/7 Lean Ground Beef",

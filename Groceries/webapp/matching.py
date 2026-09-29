@@ -82,11 +82,15 @@ import re
 # The rule that makes it a ratio and not a size: the two sides sum to 100.
 # Every N/N in that catalogue that is NOT a fat ratio fails it - fractions (1/2,
 # 3/4, 1/8 sheet cake), shrimp counts (16/20, 31/40), "24/7" - and stays a
-# dropped number exactly as before. The only non-meat hit is "Organic Girl
-# 50/50 Essential Salads", which becomes a "50%" token only a "50/50" query
-# can ask for.
+# dropped number exactly as before. The non-meat hits are "Organic Girl 50/50
+# Essential Salads" and "Prestone ... 50/50 Prediluted Antifreeze/Coolant",
+# which become a "50%" token only a "50/50" query can ask for.
+#
+# A hyphen is accepted too, for list items written "80-20 ground beef". No
+# product in that catalogue has a hyphenated pair summing to 100 (its hyphens
+# are weight ranges like "4.5-6.5 lbs"), so this only ever changes queries.
 _FAT_RATIO = re.compile(
-    r"(?<![\d./])(\d{1,2})%?(?:\s*lean)?\s*/\s*(\d{1,2})%?(?:\s*fat)?(?![\d/%])"
+    r"(?<![\d./-])(\d{1,2})%?(?:\s*lean)?\s*[/-]\s*(\d{1,2})%?(?:\s*fat)?(?![\d./%-])"
 )
 
 
