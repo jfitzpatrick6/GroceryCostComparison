@@ -10,6 +10,7 @@ import time
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 import requests
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import BadRequest, HTTPException
@@ -89,16 +90,112 @@ def check_csrf():
         raise CSRFFailed()
 
 
+# --- Connection pool (#67) ------------------------------------------------------
+#
+# Every route used to open a fresh Postgres connection (TCP + auth) and close it,
+# and the nav's context processor opened a second one on every render. Now
+# get_connection() hands out pooled connections, one pool per gunicorn worker
+# process, created lazily on first use - after gunicorn has forked, because a
+# psycopg2 connection must never be shared across a fork.
+#
+# Sizing: 2 workers x 4 threads (docker-entrypoint.sh). A request can hold two
+# connections at once (a route renders while its own connection is still open,
+# and the nav's context processor borrows another), so 8 per worker covers every
+# thread at its worst; 2 x 8 = 16, far under Postgres's default max_connections of
+# 100. If the pool is ever exhausted anyway, the caller gets a plain direct
+# connection rather than an error - slower, never broken.
+#
+# POOL_MIN is what actually gets REUSED, not a floor: psycopg2's pool keeps a
+# returned connection only while fewer than `minconn` are idle, and closes the
+# rest. At minconn=1 every page render still opened a fresh connection (the
+# route held the one idle connection, so the nav's borrow connected anew) - the
+# review of #67 caught this; measured below in the commit. 4 idle per worker
+# covers two concurrent page renders without reconnecting; they're opened
+# eagerly when the pool is created.
+#
+# The subtle part (#67): a pooled connection is not closed between uses, so an
+# uncommitted transaction would otherwise leak into the next borrower. close()
+# therefore ROLLS BACK before returning the connection - a route that forgot to
+# commit loses its writes exactly as it did when close() really closed.
+POOL_MIN, POOL_MAX = 4, 8
+_pool = None
+_pool_lock = threading.Lock()
+
+
+class _PooledConnection:
+    """A pooled psycopg2 connection whose close() returns it to the pool.
+
+    Delegates everything else, so every existing `conn = get_connection() ...
+    finally: conn.close()` call site works unchanged.
+    """
+
+    def __init__(self, pool, conn):
+        self._pool, self._conn = pool, conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    # Dunder methods bypass __getattr__, so `with conn:` (psycopg2's commit-or-
+    # rollback block, which does NOT close) needs explicit delegation.
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._conn.__exit__(*exc)
+
+    def close(self):
+        conn, self._conn = self._conn, None
+        if conn is None:
+            return
+        broken = bool(conn.closed)
+        if not broken:
+            try:
+                conn.rollback()
+            except psycopg2.Error:
+                broken = True
+        self._pool.putconn(conn, close=broken)
+
+
+def _get_pool():
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = psycopg2.pool.ThreadedConnectionPool(
+                POOL_MIN, POOL_MAX, host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS,
+            )
+        return _pool
+
+
 def get_connection(connect_timeout=None):
-    # connect_timeout defaults to None, i.e. libpq's own default, so the 36
-    # existing callers are unaffected. init_schema.py passes one because at
-    # container startup a black-holed DB_HOST would otherwise block libpq
-    # indefinitely, its retry loop would never advance, and the container would
-    # sit "Up" having created nothing (#82).
-    extra = {} if connect_timeout is None else {"connect_timeout": connect_timeout}
-    return psycopg2.connect(
-        host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS, **extra
-    )
+    # connect_timeout set = a caller that must not hang on a black-holed host
+    # (init_schema.py at startup, #82; the background USDA worker, #64). Those get
+    # a direct connection: they run rarely, and a pool built with a timeout would
+    # impose it on every request.
+    if connect_timeout is not None:
+        return psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS,
+            connect_timeout=connect_timeout,
+        )
+    pool = _get_pool()
+    # A connection the server dropped (db container restarted) still looks open
+    # client-side until it is used. Probe each checkout, discarding dead ones, so a
+    # restart costs a reconnect here instead of a 503 per idle pooled connection.
+    # Bounded: after POOL_MAX + 1 tries, or if the pool runs dry, fall back to a
+    # direct connection rather than failing the request.
+    for _ in range(POOL_MAX + 1):
+        try:
+            conn = pool.getconn()
+        except psycopg2.pool.PoolError:
+            break
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            conn.rollback()
+            return _PooledConnection(pool, conn)
+        except psycopg2.Error:
+            pool.putconn(conn, close=True)
+    return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
 
 
 def price_data_available(cur):
