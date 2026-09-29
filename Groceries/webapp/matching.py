@@ -579,7 +579,20 @@ def load_catalog(cur):
     second time on every page load; one extra date per row is far cheaper than
     that. It does not affect matching, so tests that build catalog fixtures by
     hand are unaffected by not including it."""
-    cur.execute("SELECT product, store, price, size, unit_price, unit, datetime FROM grocery_prices_latest")
+    # category (#114) is selected only if the view has it. The webapp can be
+    # deployed before the scraper next runs (the column is added by collector's
+    # schema step, possibly not until 03:00), and selecting a missing column
+    # would 500 every price page in that window. Rows then lack "category" and
+    # the page simply shows none.
+    cur.execute("""
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'grocery_prices_latest'
+          AND column_name = 'category'
+    """)
+    extra = ", category" if cur.fetchone() else ""
+    cur.execute(
+        f"SELECT product, store, price, size, unit_price, unit, datetime{extra} FROM grocery_prices_latest"
+    )
     rows = cur.fetchall()
     catalog = []
     for row in rows:

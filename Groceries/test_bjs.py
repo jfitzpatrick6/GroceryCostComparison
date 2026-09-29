@@ -471,5 +471,32 @@ class BrowseRequestTests(unittest.TestCase):
         self.assertIn(("key", "k"), params)
 
 
+class CategoryTests(unittest.TestCase):
+    """#114. group_ids are real ones captured from the live browse API on
+    2026-09-29 (a case of Wellsley Farms water carried 25; most are seasonal)."""
+
+    def test_deepest_real_department_wins(self):
+        water = [
+            "seasonal>summer>heat-wave-prep", "our-brands>wellsley-farms>wellsley-farms-beverages",
+            "grocery>wellsley-farms>wellsley-farms-beverages", "grocery>beverages>wellsley-farms-beverages",
+            "grocery>beverages>water", "seasonal>game-day>game-day-foods>game-day-beverages",
+        ]
+        # Two depth-3 departments tie; the first in API order wins.
+        self.assertEqual(BJs.bjs_category(water), "Beverages > Wellsley Farms Beverages")
+
+    def test_apostrophes_stay_lowercase(self):
+        self.assertEqual(BJs.bjs_category(["grocery>kid's-snacks"]), "Kid's Snacks")
+
+    def test_cross_cutting_collections_are_not_departments(self):
+        jerky = ["grocery>protein-and-nutrition>protein-snacks", "grocery>snacks>beef-jerky-and-meat-snacks",
+                 "seasonal>winter>new-year-routine>gym-bag-stock-up"]
+        self.assertEqual(BJs.bjs_category(jerky), "Snacks > Beef Jerky & Meat Snacks")
+
+    def test_no_department_is_none_not_a_guess(self):
+        self.assertIsNone(BJs.bjs_category(["seasonal>summer>heat-wave-prep", "deals>x"]))
+        self.assertIsNone(BJs.bjs_category(None))
+        self.assertIsNone(BJs.bjs_category(["grocery>kids-grocery>grab-and-go-snacks"]))
+
+
 if __name__ == "__main__":
     unittest.main()

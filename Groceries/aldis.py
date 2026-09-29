@@ -13,4 +13,8 @@ def main(store=None):
     if store:
         print(f"aldis.py: store={store!r} is not used yet (see #43) - "
               f"scraping the store resolved for this machine's network location instead.")
-    return instacart_storefront.scrape_store(RETAILER_SLUG, HOST, calculate_rate_per_unit)
+    # categories=False: Aldi's storefront tree is brands and diets ("ALDI
+    # Exclusive Brands > Kirkwood", "Shop By Diet > Organic"), not departments
+    # - checked live 2026-09-29 (#114). Recording those as categories would be
+    # confidently wrong; NULL says "unknown".
+    return instacart_storefront.scrape_store(RETAILER_SLUG, HOST, calculate_rate_per_unit, categories=False)
